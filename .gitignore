@@ -1,0 +1,17 @@
+# Secrets — never commit your FRED key
+.streamlit/secrets.toml
+
+# Local database
+econ.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
