@@ -19,7 +19,6 @@ import streamlit as st
 from econ import refresh, store
 from econ.indicators import INDICATORS, by_key, sections
 from econ.models import Indicator, Reading
-from econ.sources import fred_api_key
 
 st.set_page_config(page_title="Econ Dashboard", page_icon="📊", layout="wide")
 
@@ -211,7 +210,7 @@ def render_explorer() -> None:
     pivot.index = pivot.index.date
     st.dataframe(pivot, use_container_width=True)
     st.download_button(
-        "⬇️ Download CSV (opens in Excel)", pivot.to_csv().encode(),
+        "Download CSV (opens in Excel)", pivot.to_csv().encode(),
         "econ_explorer.csv", "text/csv")
 
 
@@ -221,7 +220,7 @@ def render_explorer() -> None:
 
 
 def render_manual_form(ind: Indicator) -> None:
-    with st.expander("✏️ Add / update a reading"):
+    with st.expander("Add / update a reading"):
         with st.form(f"form-{ind.key}", clear_on_submit=True):
             label = st.selectbox("Series", [s.label for s in ind.series],
                                  key=f"lbl-{ind.key}")
@@ -230,7 +229,7 @@ def render_manual_form(ind: Indicator) -> None:
             raw_val = st.text_input("Value (leave blank for a note-only entry)",
                                     key=f"val-{ind.key}")
             note = st.text_input("Commentary", key=f"note-{ind.key}")
-            if st.form_submit_button("💾 Save", type="primary"):
+            if st.form_submit_button("Save", type="primary"):
                 value = None
                 if raw_val.strip():
                     try:
@@ -341,7 +340,7 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
             render_manual_form(ind)
 
         st.caption(
-            f"📎 Source: [{ind.source_url.split('//')[-1][:60]}…]({ind.source_url})  ·  "
+            f"Source: [{ind.source_url.split('//')[-1][:60]}…]({ind.source_url})  ·  "
             f"`{ind.cadence}`  ·  `{ind.source_type}`")
         fred_ids: list[str] = []
         for s in ind.series:
@@ -350,7 +349,7 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
         if fred_ids:
             links = "  ·  ".join(
                 f"[{fid}](https://fred.stlouisfed.org/series/{fid})" for fid in fred_ids)
-            st.caption(f"🔗 FRED: {links}")
+            st.caption(f"FRED: {links}")
 
 
 # ---------------------------------------------------------------------------
@@ -358,29 +357,20 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.title("📊 Econ Dashboard")
+    st.title("Econ Dashboard")
     st.caption("All the numbers, plus some intuitions.")
-
-    has_key = bool(fred_api_key())
-    st.write("**FRED API key:**", "✅ configured" if has_key else "❌ missing")
-    if not has_key:
-        st.info(
-            "Add a free FRED key to pull live data:\n\n"
-            "1. Get one at fredaccount.stlouisfed.org/apikeys\n"
-            "2. Put `FRED_API_KEY=\"...\"` in `.streamlit/secrets.toml`\n\n"
-            "Until then the dashboard shows seeded values.")
 
     st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
 
     # Admin login (only shown when a password is configured, i.e. on a deploy).
     if admin_password():
         if st.session_state.get("is_admin"):
-            st.success("🔓 Admin mode")
+            st.success("Admin mode")
             if st.button("Log out", use_container_width=True):
                 st.session_state.is_admin = False
                 st.rerun()
         else:
-            with st.expander("🔐 Admin login"):
+            with st.expander("Admin login"):
                 entered = st.text_input("Password", type="password",
                                         key="admin_pw")
                 if st.button("Unlock", use_container_width=True):
@@ -391,7 +381,7 @@ with st.sidebar:
                         st.error("Wrong password.")
 
     if is_admin():
-        if st.button("🔄 Refresh now", use_container_width=True, type="primary"):
+        if st.button("Refresh now", use_container_width=True, type="primary"):
             with st.spinner("Fetching latest releases…"):
                 summary = refresh.refresh_all()
             clear_caches()
@@ -401,7 +391,7 @@ with st.sidebar:
                 st.warning(f"{err['key']}: {err['detail']}")
             st.rerun()
     else:
-        st.caption("👀 Read-only view. Log in as admin to refresh or edit.")
+        st.caption("Read-only view. Log in as admin to refresh or edit.")
 
     chosen_sections = st.multiselect("Sections", sections(), default=sections(),
                                      help="Filter which sections show below.")
@@ -417,10 +407,10 @@ st.caption(f"Rendered {datetime.now():%Y-%m-%d %H:%M} · "
 
 # Master controls (top of page)
 ctrl1, ctrl2 = st.columns([1, 3])
-show_tables = ctrl1.toggle("📋 Show data tables", value=True,
+show_tables = ctrl1.toggle("Show data tables", value=True,
                            help="Master switch: hide/show the readings tables everywhere.")
 
-with st.expander("🔬 Data Explorer — overlay & download any series", expanded=False):
+with st.expander("Data Explorer — overlay & download any series", expanded=False):
     render_explorer()
 
 st.divider()
