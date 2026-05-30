@@ -4,6 +4,9 @@
 # Local database
 econ.db
 
+# Reference / scratch notes (kept locally, not part of the app)
+notes/
+
 # Python
 __pycache__/
 *.py[cod]

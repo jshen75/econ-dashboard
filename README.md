@@ -2,7 +2,8 @@
 
 A personal, self-hosted US-macro dashboard — *all the numbers, plus some
 intuitions*. A much simpler, single-user Trading-Economics for the handful of
-indicators worth tracking, built from [ECON_DASHBOARD_BRIEF.md](ECON_DASHBOARD_BRIEF.md).
+indicators worth tracking, built from the original project brief (kept locally
+in `notes/`).
 
 ## What it does
 
