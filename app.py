@@ -9,6 +9,7 @@ Run:  streamlit run app.py
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 
 import pandas as pd
@@ -31,6 +32,30 @@ if store.get_meta("seeded_at") is None:
 
     store.upsert_readings(SEED)
     store.set_meta("seeded_at", date.today().isoformat())
+
+
+# ---------------------------------------------------------------------------
+# Admin gate — refresh + manual edits are admin-only when a password is set.
+# If no ADMIN_PASSWORD is configured (e.g. running locally), you have full
+# access. On a public deploy, set ADMIN_PASSWORD in Streamlit Cloud secrets so
+# visitors get a read-only dashboard.
+# ---------------------------------------------------------------------------
+
+
+def admin_password() -> str | None:
+    pw = os.environ.get("ECON_ADMIN_PASSWORD")
+    if pw:
+        return pw
+    try:
+        return st.secrets.get("ADMIN_PASSWORD")
+    except Exception:
+        return None
+
+
+def is_admin() -> bool:
+    if not admin_password():
+        return True  # no password configured -> trusted (local) session
+    return bool(st.session_state.get("is_admin", False))
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +337,7 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
         else:
             render_timeseries(ind, df, show_tables)
 
-        if ind.source_type in ("manual", "scrape"):
+        if ind.source_type in ("manual", "scrape") and is_admin():
             render_manual_form(ind)
 
         st.caption(
@@ -347,15 +372,36 @@ with st.sidebar:
 
     st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
 
-    if st.button("🔄 Refresh now", use_container_width=True, type="primary"):
-        with st.spinner("Fetching latest releases…"):
-            summary = refresh.refresh_all()
-        clear_caches()
-        st.success(f"{summary['ok']} updated · {summary['new']} new · "
-                   f"{summary['revised']} revised")
-        for err in summary["errors"]:
-            st.warning(f"{err['key']}: {err['detail']}")
-        st.rerun()
+    # Admin login (only shown when a password is configured, i.e. on a deploy).
+    if admin_password():
+        if st.session_state.get("is_admin"):
+            st.success("🔓 Admin mode")
+            if st.button("Log out", use_container_width=True):
+                st.session_state.is_admin = False
+                st.rerun()
+        else:
+            with st.expander("🔐 Admin login"):
+                entered = st.text_input("Password", type="password",
+                                        key="admin_pw")
+                if st.button("Unlock", use_container_width=True):
+                    if entered == admin_password():
+                        st.session_state.is_admin = True
+                        st.rerun()
+                    else:
+                        st.error("Wrong password.")
+
+    if is_admin():
+        if st.button("🔄 Refresh now", use_container_width=True, type="primary"):
+            with st.spinner("Fetching latest releases…"):
+                summary = refresh.refresh_all()
+            clear_caches()
+            st.success(f"{summary['ok']} updated · {summary['new']} new · "
+                       f"{summary['revised']} revised")
+            for err in summary["errors"]:
+                st.warning(f"{err['key']}: {err['detail']}")
+            st.rerun()
+    else:
+        st.caption("👀 Read-only view. Log in as admin to refresh or edit.")
 
     chosen_sections = st.multiselect("Sections", sections(), default=sections(),
                                      help="Filter which sections show below.")
