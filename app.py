@@ -24,6 +24,14 @@ st.set_page_config(page_title="Econ Dashboard", page_icon="📊", layout="wide")
 
 store.init_db()
 
+# On a fresh deploy (e.g. Streamlit Cloud) the DB is empty, so load the seed
+# fixtures once. Live FRED data is layered on top via the Refresh button.
+if store.get_meta("seeded_at") is None:
+    from seed import SEED
+
+    store.upsert_readings(SEED)
+    store.set_meta("seeded_at", date.today().isoformat())
+
 
 # ---------------------------------------------------------------------------
 # Data access (cached so the page is snappy; refresh/edit clears the cache)
