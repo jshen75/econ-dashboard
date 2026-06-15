@@ -7,6 +7,7 @@ status so the UI can show what updated, what was revised, and what failed.
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 
 from . import sources, store
 from .indicators import INDICATORS
@@ -15,25 +16,41 @@ from .models import Indicator
 
 def refresh_indicator(ind: Indicator) -> dict:
     """Refresh one indicator; returns a status dict (never raises)."""
+    started = perf_counter()
     try:
         readings = sources.collect(ind)
     except sources.MissingApiKey as exc:
-        return {"key": ind.key, "status": "no_key", "detail": str(exc), "counts": {}}
+        return _result(ind.key, "no_key", str(exc), {}, started)
     except Exception as exc:  # noqa: BLE001 - log loudly, keep the run alive
-        return {"key": ind.key, "status": "error", "detail": str(exc), "counts": {}}
+        return _result(ind.key, "error", str(exc), {}, started)
 
     if not readings:
         note = "manual / seeded" if ind.source_type == "manual" else "no data parsed"
-        return {"key": ind.key, "status": "skipped", "detail": note, "counts": {}}
+        return _result(ind.key, "skipped", note, {}, started)
 
     counts = store.upsert_readings(readings)
-    return {"key": ind.key, "status": "ok", "detail": "", "counts": counts}
+    return _result(ind.key, "ok", "", counts, started)
+
+
+def _result(key: str, status: str, detail: str, counts: dict, started: float) -> dict:
+    return {
+        "key": key,
+        "status": status,
+        "detail": detail,
+        "counts": counts,
+        "seconds": round(perf_counter() - started, 2),
+    }
 
 
 def refresh_all() -> dict:
     """Refresh every indicator. Returns a run summary for the UI."""
+    return refresh_many(INDICATORS)
+
+
+def refresh_many(indicators: list[Indicator]) -> dict:
+    """Refresh selected indicators. Returns a run summary for the UI."""
     store.init_db()
-    results = [refresh_indicator(ind) for ind in INDICATORS]
+    results = [refresh_indicator(ind) for ind in indicators]
     now = datetime.now().isoformat(timespec="seconds")
     store.set_meta("last_refresh", now)
     return {

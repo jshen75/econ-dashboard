@@ -13,6 +13,7 @@ from datetime import date
 # How an indicator is sourced. One fetch interface routes on this (brief §4).
 SOURCE_FRED = "fred"        # pull clean numbers from the FRED API
 SOURCE_SCRAPE = "scrape"    # scrape a human page (ISM PMI)
+SOURCE_NEWS = "news"        # aggregate indexed news coverage (GDELT)
 SOURCE_MANUAL = "manual"    # hand-entered notes (Tariffs / Geopolitics)
 
 
@@ -43,7 +44,7 @@ class Indicator:
     cadence: str                # monthly | quarterly | daily | irregular
     intuition: str              # what rising/falling means
     source_url: str             # the link you open to get the latest release
-    source_type: str            # SOURCE_FRED | SOURCE_SCRAPE | SOURCE_MANUAL
+    source_type: str            # SOURCE_FRED | SOURCE_SCRAPE | SOURCE_NEWS | SOURCE_MANUAL
     series: list[SeriesSpec] = field(default_factory=list)
     is_curve: bool = False      # render as a yield-curve line (x = maturity)
 
@@ -70,5 +71,5 @@ class Reading:
     release_date: date | None = None  # when the agency published it
     commentary: str = ""
     raw_snippet: str = ""       # source text kept for auditing the parse
-    source: str = ""            # "fred:CPIAUCSL", "scrape:ism", "manual"
+    source: str = ""            # "fred:CPIAUCSL", "scrape:ism", "news:gdelt", "manual"
     prior_value: float | None = None  # set when this period was revised

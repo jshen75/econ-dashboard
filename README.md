@@ -7,12 +7,15 @@ in `notes/`).
 
 ## What it does
 
-- 17 indicators across 6 sections (Demand → GDP, Income/Labor, Production,
-  Inflation, Rates, Tariffs/Geopolitics).
+- 15 indicators across 5 sections (Demand → GDP, Income/Labor, Production,
+  Inflation, Rates).
 - For each: the latest number(s), recent history chart, a short "what this means"
   intuition, and the source link.
 - A **Refresh now** button pulls the latest releases. Government revisions are
   tracked (shows *"revised from X to Y"*), never silently overwritten.
+- Refresh can run all indicators, a selected subset, or a single indicator from
+  its own chart section. This is useful when scrape/news sources are slow or
+  rate-limited.
 
 ## Architecture
 
@@ -42,11 +45,8 @@ row to [econ/indicators.py](econ/indicators.py) — no new code.
   public WARN notice page into monthly affected-worker and notice-count readings,
   with manual entry available as a fallback. Add state adapters behind
   `collect_warn_notices()` rather than mixing page scraping into the UI.
-- **Immigration news coverage** uses the GDELT DOC API as a news-index adapter,
-  storing raw article counts and a normalized share per 100k monitored articles.
-  This is intentionally separate from page scraping because it measures aggregate
-  coverage volume rather than facts from one official release.
-- **Tariffs/Geopolitics** is qualitative — hand-entered notes (see `seed.py`).
+- The previous Tariffs/Geopolitics section is parked for now; its data can be
+  reintroduced later by adding indicators back to the registry.
 
 ### Adding a source type
 

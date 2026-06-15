@@ -27,11 +27,19 @@ PER_HOST_MIN_INTERVAL_S: dict[str, float] = {
     "www.federalreserve.gov": 1.0,
     "home.treasury.gov": 1.0,
     "www.ismworld.org": 2.0,
+    "www.pa.gov": 1.0,
+    "api.gdeltproject.org": 1.0,
 }
 _DEFAULT_MIN_INTERVAL_S = 1.0
 
 RETRIABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
-BLOCK_MARKERS = ("captcha", "datadome", "access denied", "request blocked")
+BLOCK_MARKERS = (
+    "datadome",
+    "access denied",
+    "request blocked",
+    "please complete the captcha",
+    "unusual traffic",
+)
 
 DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_MAX_RETRIES = 3

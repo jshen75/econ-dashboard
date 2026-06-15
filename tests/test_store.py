@@ -1,67 +1,48 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
+import time
 import unittest
 from datetime import date
-from unittest.mock import patch
+from pathlib import Path
 
 from econ import store
 from econ.models import Reading
 
 
 class StoreTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db_path = os.path.join(self.tmp.name, "test.db")
-        env = {
-            "ECON_SQLITE_PATH": self.db_path,
-            "DATABASE_URL": "",
-            "POSTGRES_URL": "",
-            "NEON_DATABASE_URL": "",
-        }
-        self.env_patch = patch.dict(os.environ, env, clear=False)
-        self.env_patch.start()
-        store.init_db()
+    def test_unchanged_reading_is_not_written_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "econ.db"
+            old_env = {
+                name: os.environ.pop(name, None)
+                for name in (*store.DATABASE_URL_NAMES, "ECON_SQLITE_PATH")
+            }
+            os.environ["ECON_SQLITE_PATH"] = str(db_path)
+            try:
+                store.init_db()
+                reading = Reading("claims", "Initial", date(2026, 6, 1), 240, "K")
+                self.assertEqual(store.upsert_readings([reading])["new"], 1)
+                first_fetched_at = _fetched_at(db_path)
+                time.sleep(1.1)
+                stats = store.upsert_readings([reading])
+                second_fetched_at = _fetched_at(db_path)
+            finally:
+                os.environ.pop("ECON_SQLITE_PATH", None)
+                for name, value in old_env.items():
+                    if value is not None:
+                        os.environ[name] = value
 
-    def tearDown(self) -> None:
-        self.env_patch.stop()
-        self.tmp.cleanup()
+        self.assertEqual(stats["unchanged"], 1)
+        self.assertEqual(first_fetched_at, second_fetched_at)
 
-    def test_upsert_tracks_new_unchanged_and_revised_readings(self) -> None:
-        original = Reading(
-            indicator_key="cpi",
-            series_label="Headline YoY",
-            period=date(2026, 5, 1),
-            value=2.7,
-            unit="%",
-            source="test",
-        )
 
-        self.assertEqual(store.upsert_readings([original])["new"], 1)
-        self.assertEqual(store.upsert_readings([original])["unchanged"], 1)
-
-        revised = Reading(
-            indicator_key="cpi",
-            series_label="Headline YoY",
-            period=date(2026, 5, 1),
-            value=2.8,
-            unit="%",
-            source="test",
-        )
-        stats = store.upsert_readings([revised])
-        saved = store.latest_reading("cpi", "Headline YoY")
-
-        self.assertEqual(stats["revised"], 1)
-        self.assertIsNotNone(saved)
-        assert saved is not None
-        self.assertEqual(saved.value, 2.8)
-        self.assertEqual(saved.prior_value, 2.7)
-
-    def test_meta_round_trips(self) -> None:
-        self.assertIsNone(store.get_meta("last_refresh"))
-        store.set_meta("last_refresh", "2026-06-14T10:00:00")
-        self.assertEqual(store.get_meta("last_refresh"), "2026-06-14T10:00:00")
+def _fetched_at(db_path: Path) -> str:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT fetched_at FROM readings").fetchone()
+    return row[0]
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from .models import (
     SOURCE_FRED,
-    SOURCE_MANUAL,
     SOURCE_SCRAPE,
     Indicator,
     SeriesSpec,
@@ -127,6 +126,34 @@ INDICATORS: list[Indicator] = [
             SeriesSpec("Nominal AHE YoY", "CES0500000003", "pc1", "%"),
         ],
     ),
+    Indicator(
+        key="jobless_claims",
+        name="Unemployment Insurance Claims",
+        section="B · Income / Labor",
+        cadence="weekly",
+        intuition="High-frequency labor stress; initial claims lead layoffs, "
+                  "continuing claims show how hard it is to find the next job.",
+        source_url="https://oui.doleta.gov/unemploy/claims.asp",
+        source_type=SOURCE_FRED,
+        series=[
+            SeriesSpec("Initial claims, K", "ICSA", "lin", "K", scale=0.001, headline=True),
+            SeriesSpec("Continuing claims, K", "CCSA", "lin", "K", scale=0.001),
+        ],
+    ),
+    Indicator(
+        key="warn_notices",
+        name="WARN Notices (layoff filings)",
+        section="B · Income / Labor",
+        cadence="irregular",
+        intuition="Filed mass-layoff and closure notices are an early-warning labor "
+                  "signal, but coverage is state-fragmented and scrape quality varies.",
+        source_url="https://www.pa.gov/agencies/dli/programs-services/workforce-development-home/warn-requirements/warn-notices",
+        source_type=SOURCE_SCRAPE,
+        series=[
+            SeriesSpec("Affected workers", None, "lin", "workers", headline=True),
+            SeriesSpec("Notice count", None, "lin", "notices"),
+        ],
+    ),
     # ---- SECTION C — PRODUCTION -----------------------------------------
     Indicator(
         key="industrial_production",
@@ -206,18 +233,6 @@ INDICATORS: list[Indicator] = [
             SeriesSpec("20Y", "DGS20", "lin", "%"),
             SeriesSpec("30Y", "DGS30", "lin", "%"),
         ],
-    ),
-    # ---- SECTION F — TARIFFS / GEOPOLITICS (qualitative) ----------------
-    Indicator(
-        key="tariffs",
-        name="Tariffs / Geopolitics",
-        section="F · Tariffs / Geopolitics",
-        cadence="irregular",
-        intuition="The macro wildcard — feeds inflation, trade balance, durable-goods "
-                  "front-running, and the rate path.",
-        source_url="https://www.reuters.com/markets/us/",
-        source_type=SOURCE_MANUAL,
-        series=[SeriesSpec("Note", None, "lin", "", headline=True)],
     ),
 ]
 

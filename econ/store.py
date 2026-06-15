@@ -135,6 +135,8 @@ def upsert_readings(readings: Iterable[Reading]) -> dict[str, int]:
 
     Revision rule: if a row already exists for (key, series, period) and the new
     value differs, move the old value into prior_value before updating.
+    Unchanged rows are counted but not written back. This keeps Neon refreshes
+    from spending most of their time touching old history.
     """
     stats = {"new": 0, "revised": 0, "unchanged": 0}
     now = datetime.now().isoformat(timespec="seconds")
@@ -155,6 +157,7 @@ def upsert_readings(readings: Iterable[Reading]) -> dict[str, int]:
                 stats["revised"] += 1
             else:
                 stats["unchanged"] += 1
+                continue
 
             conn.execute(
                 f"""

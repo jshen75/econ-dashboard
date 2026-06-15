@@ -17,7 +17,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from econ import refresh, store
-from econ.indicators import INDICATORS, by_key, sections
+from econ.indicators import INDICATORS, sections
 from econ.models import Indicator, Reading
 
 st.set_page_config(page_title="Econ Dashboard", page_icon="📊", layout="wide")
@@ -252,6 +252,39 @@ def render_manual_form(ind: Indicator) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Refresh controls
+# ---------------------------------------------------------------------------
+
+
+def indicator_label(ind: Indicator) -> str:
+    return f"{ind.section} / {ind.name}"
+
+
+def summarize_refresh(summary: dict) -> None:
+    st.success(f"{summary['ok']} updated · {summary['new']} new · "
+               f"{summary['revised']} revised")
+    slow = sorted(summary["results"], key=lambda r: r.get("seconds", 0), reverse=True)[:3]
+    if slow:
+        detail = " · ".join(
+            f"{r['key']} {r.get('seconds', 0):.2f}s ({r['status']})" for r in slow
+        )
+        st.caption(f"Slowest: {detail}")
+    for err in summary["errors"]:
+        st.warning(f"{err['key']}: {err['detail']}")
+
+
+def run_refresh(indicators: list[Indicator], label: str) -> None:
+    if not indicators:
+        st.warning("Pick at least one indicator to refresh.")
+        return
+    with st.spinner(label):
+        summary = refresh.refresh_many(indicators)
+    clear_caches()
+    st.session_state.last_refresh_summary = summary
+    st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Indicator rendering
 # ---------------------------------------------------------------------------
 
@@ -332,9 +365,12 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 
     with st.expander(f"**{ind.name}**{headline_txt}", expanded=True):
         st.caption(f"_{ind.intuition}_")
+        if is_admin():
+            if st.button("Update this indicator", key=f"refresh-{ind.key}"):
+                run_refresh([ind], f"Updating {ind.name}...")
         if df.empty:
-            st.info("No data yet — add a FRED key and hit **Refresh now**, "
-                    "or run `python seed.py`.")
+            st.info("No data yet. Use **Update this indicator**, refresh selected "
+                    "sources from the sidebar, or run `python seed.py`.")
         elif ind.is_curve:
             render_curve(ind, df, show_tables)
         else:
@@ -386,15 +422,22 @@ with st.sidebar:
                         st.error("Wrong password.")
 
     if is_admin():
-        if st.button("Refresh now", width="stretch", type="primary"):
-            with st.spinner("Fetching latest releases…"):
-                summary = refresh.refresh_all()
-            clear_caches()
-            st.success(f"{summary['ok']} updated · {summary['new']} new · "
-                       f"{summary['revised']} revised")
-            for err in summary["errors"]:
-                st.warning(f"{err['key']}: {err['detail']}")
-            st.rerun()
+        labels_by_key = {ind.key: indicator_label(ind) for ind in INDICATORS}
+        selected_keys = st.multiselect(
+            "Refresh selected",
+            options=[ind.key for ind in INDICATORS],
+            default=["jobless_claims", "warn_notices"],
+            format_func=lambda key: labels_by_key[key],
+            help="Use this when one scrape/news source is slow and you only want a few updates.",
+        )
+        c1, c2 = st.columns(2)
+        if c1.button("Refresh all", width="stretch", type="primary"):
+            run_refresh(INDICATORS, "Fetching latest releases...")
+        if c2.button("Selected", width="stretch"):
+            chosen = [ind for ind in INDICATORS if ind.key in selected_keys]
+            run_refresh(chosen, "Refreshing selected indicators...")
+        if st.session_state.get("last_refresh_summary"):
+            summarize_refresh(st.session_state.last_refresh_summary)
     else:
         st.caption("Read-only view. Log in as admin to refresh or edit.")
 

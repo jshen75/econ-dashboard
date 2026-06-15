@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codify Development Process"
+  short_description: "Plan, build, verify product changes"
+  default_prompt: "Use $codify-development-process to scope, implement, test, and deploy this feature safely."
