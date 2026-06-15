@@ -7,7 +7,7 @@ in `notes/`).
 
 ## What it does
 
-- 14 indicators across 6 sections (Demand → GDP, Income/Labor, Production,
+- 17 indicators across 6 sections (Demand → GDP, Income/Labor, Production,
   Inflation, Rates, Tariffs/Geopolitics).
 - For each: the latest number(s), recent history chart, a short "what this means"
   intuition, and the source link.
@@ -24,19 +24,40 @@ row to [econ/indicators.py](econ/indicators.py) — no new code.
 | Config | `econ/indicators.py` | The indicator registry (DRY, config-driven) |
 | Models | `econ/models.py` | `Indicator` / `SeriesSpec` / `Reading` shapes |
 | Fetch | `econ/fetch.py` | Polite, retrying HTTP (per-host rate limit, backoff, block detection) |
-| Sources | `econ/sources.py` | FRED API · ISM scrape · manual — behind one `collect()` |
-| Store | `econ/store.py` | SQLite + revision tracking |
+| Sources | `econ/sources.py` | FRED API · scrapes · news aggregation · manual — behind one `collect()` |
+| Store | `econ/store.py` | SQLite locally, Postgres/Neon on deploy + revision tracking |
 | Orchestration | `econ/refresh.py` | `fetch → normalize → store` for all indicators |
 | Display | `app.py` | Streamlit UI |
 
 ### Data sourcing (the hybrid)
 
-- **FRED API** for the 11 quantitative series — one clean interface, server-side
+- **FRED API** for quantitative series — one clean interface, server-side
   MoM/YoY transforms, rock-solid uptime. *(This is why the dashboard is reliable
   instead of scraping a dozen .gov pages that change layout.)*
+- **Jobless claims** use FRED's seasonally adjusted initial and continuing claims
+  series, scaled to thousands for display.
 - **ISM PMI** is licensed and not on FRED — best-effort scraper with a seeded
   fallback.
+- **WARN notices** are state-fragmented. The first adapter scrapes Pennsylvania's
+  public WARN notice page into monthly affected-worker and notice-count readings,
+  with manual entry available as a fallback. Add state adapters behind
+  `collect_warn_notices()` rather than mixing page scraping into the UI.
+- **Immigration news coverage** uses the GDELT DOC API as a news-index adapter,
+  storing raw article counts and a normalized share per 100k monitored articles.
+  This is intentionally separate from page scraping because it measures aggregate
+  coverage volume rather than facts from one official release.
 - **Tariffs/Geopolitics** is qualitative — hand-entered notes (see `seed.py`).
+
+### Adding a source type
+
+Keep the contract as `fetch -> parse/normalize -> Reading -> store`. Use:
+
+- `fred` for stable numeric series with clean IDs.
+- `scrape` for public pages/files where no structured API exists; parsers should
+  fail soft and return no readings rather than storing garbage.
+- `news` for aggregate media indexes such as GDELT.
+- `manual` for qualitative notes or fallback data that should be entered by an
+  admin user.
 
 ## Quickstart
 
@@ -71,13 +92,25 @@ python -m econ.refresh
 3. In the app's **Settings → Secrets**, paste:
    ```toml
    FRED_API_KEY = "your_key_here"
+   ADMIN_PASSWORD = "choose-a-strong-password"
    ```
 4. Deploy. It's now reachable from your phone.
 
-> Note: Community Cloud has an ephemeral filesystem, so `econ.db` resets on
-> redeploy. The app re-seeds/refreshes on demand. If you want durable history
-> there, swap `econ/store.py`'s SQLite path for a hosted Postgres (e.g. Neon/
-> Supabase free tier) — the store interface stays the same.
+### Durable history with Neon Postgres
+
+Streamlit Community Cloud has an ephemeral filesystem, so local `econ.db` resets
+on redeploy. For durable history, create a Neon Postgres database and add its
+connection string to Streamlit secrets:
+
+```toml
+DATABASE_URL = "postgresql://user:password@host/dbname?sslmode=require"
+```
+
+`econ/store.py` automatically uses Postgres when `DATABASE_URL`, `POSTGRES_URL`,
+or `NEON_DATABASE_URL` is set. If none is set, it falls back to local SQLite.
+
+On first deploy with Neon, the app creates the tables and seeds the starter data.
+After that, click **Refresh now** to pull the latest live data into Neon.
 
 ## Adding an indicator
 

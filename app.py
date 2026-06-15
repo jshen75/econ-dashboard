@@ -2,7 +2,7 @@
 
 All the numbers, plus some intuitions. Single page, collapsible sections, a
 top Data Explorer for overlaying/downloading series, charts with MoM/YoY tabs,
-a master table toggle, and an in-app form for the manual indicators (ISM, Tariffs).
+a master table toggle, and an in-app form for manual/fallback source updates.
 
 Run:  streamlit run app.py
 """
@@ -117,6 +117,10 @@ def fmt(value, unit: str) -> str:
         return f"{sign}{value:.1f}%"
     if unit == "index":
         return f"{value:.1f}"
+    if unit in ("workers", "notices", "articles"):
+        return f"{value:,.0f} {unit}"
+    if unit == "per 100k":
+        return f"{value:,.1f} per 100k"
     return f"{value:,.2f}{unit}"
 
 
@@ -204,11 +208,11 @@ def render_explorer() -> None:
         xaxis_title="Date",
         yaxis_title="Index (100 = start)" if normalize else "Value",
         legend=dict(orientation="h", y=-0.25), hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True, key="explorer-chart")
+    st.plotly_chart(fig, width="stretch", key="explorer-chart")
 
     pivot = sub.pivot_table(index="period", columns="pick", values="value").sort_index()
     pivot.index = pivot.index.date
-    st.dataframe(pivot, use_container_width=True)
+    st.dataframe(pivot, width="stretch")
     st.download_button(
         "Download CSV (opens in Excel)", pivot.to_csv().encode(),
         "econ_explorer.csv", "text/csv")
@@ -265,14 +269,14 @@ def render_curve(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
                       yaxis_title="Yield (%)", xaxis_title="Maturity")
     cols = st.columns([2, 3])
     with cols[1]:
-        st.plotly_chart(fig, use_container_width=True, key=f"{ind.key}-curve")
+        st.plotly_chart(fig, width="stretch", key=f"{ind.key}-curve")
     with cols[0]:
         st.caption(f"As of {latest_period:%Y-%m-%d}")
         if show_tables:
             st.dataframe(
                 points.reset_index().rename(
                     columns={"series": "Maturity", "value": "Yield %"}),
-                hide_index=True, use_container_width=True)
+                hide_index=True, width="stretch")
 
 
 def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
@@ -298,15 +302,15 @@ def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> No
             tabs = st.tabs(["Combined"] + present)
             with tabs[0]:
                 st.plotly_chart(combined_fig(plot_df, present, unit_by_label),
-                                use_container_width=True, key=f"{ind.key}-combined")
+                                width="stretch", key=f"{ind.key}-combined")
             for tab, label in zip(tabs[1:], present):
                 with tab:
                     st.plotly_chart(
                         combined_fig(plot_df, [label], unit_by_label),
-                        use_container_width=True, key=f"{ind.key}-{label}")
+                        width="stretch", key=f"{ind.key}-{label}")
         else:
             st.plotly_chart(combined_fig(plot_df, present, unit_by_label),
-                            use_container_width=True, key=f"{ind.key}-single")
+                            width="stretch", key=f"{ind.key}-single")
 
     if show_tables:
         recent = df.sort_values("period", ascending=False).head(8)
@@ -314,7 +318,7 @@ def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> No
         show["value"] = [fmt(v, u) for v, u in zip(show["value"], show["unit"])]
         show["period"] = show["period"].dt.date
         show = show.drop(columns="unit").rename(columns=str.title)
-        st.dataframe(show, hide_index=True, use_container_width=True)
+        st.dataframe(show, hide_index=True, width="stretch")
 
 
 def render_indicator(ind: Indicator, show_tables: bool) -> None:
@@ -361,19 +365,20 @@ with st.sidebar:
     st.caption("All the numbers, plus some intuitions.")
 
     st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
+    st.caption(f"Storage: {store.backend_name()}")
 
     # Admin login (only shown when a password is configured, i.e. on a deploy).
     if admin_password():
         if st.session_state.get("is_admin"):
             st.success("Admin mode")
-            if st.button("Log out", use_container_width=True):
+            if st.button("Log out", width="stretch"):
                 st.session_state.is_admin = False
                 st.rerun()
         else:
             with st.expander("Admin login"):
                 entered = st.text_input("Password", type="password",
                                         key="admin_pw")
-                if st.button("Unlock", use_container_width=True):
+                if st.button("Unlock", width="stretch"):
                     if entered == admin_password():
                         st.session_state.is_admin = True
                         st.rerun()
@@ -381,7 +386,7 @@ with st.sidebar:
                         st.error("Wrong password.")
 
     if is_admin():
-        if st.button("Refresh now", use_container_width=True, type="primary"):
+        if st.button("Refresh now", width="stretch", type="primary"):
             with st.spinner("Fetching latest releases…"):
                 summary = refresh.refresh_all()
             clear_caches()
