@@ -7,6 +7,7 @@ import time
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from econ import store
 from econ.models import Reading
@@ -22,13 +23,14 @@ class StoreTests(unittest.TestCase):
             }
             os.environ["ECON_SQLITE_PATH"] = str(db_path)
             try:
-                store.init_db()
-                reading = Reading("claims", "Initial", date(2026, 6, 1), 240, "K")
-                self.assertEqual(store.upsert_readings([reading])["new"], 1)
-                first_fetched_at = _fetched_at(db_path)
-                time.sleep(1.1)
-                stats = store.upsert_readings([reading])
-                second_fetched_at = _fetched_at(db_path)
+                with patch("econ.store.database_url", return_value=None):
+                    store.init_db()
+                    reading = Reading("claims", "Initial", date(2026, 6, 1), 240, "K")
+                    self.assertEqual(store.upsert_readings([reading])["new"], 1)
+                    first_fetched_at = _fetched_at(db_path)
+                    time.sleep(1.1)
+                    stats = store.upsert_readings([reading])
+                    second_fetched_at = _fetched_at(db_path)
             finally:
                 os.environ.pop("ECON_SQLITE_PATH", None)
                 for name, value in old_env.items():

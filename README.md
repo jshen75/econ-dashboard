@@ -11,6 +11,8 @@ in `notes/`).
   Inflation, Rates).
 - For each: the latest number(s), recent history chart, a short "what this means"
   intuition, and the source link.
+- A mortgage calculator page for editable CPR/CDR/severity stress tests, projected
+  cash flows, and grouped charts.
 - A **Refresh now** button pulls the latest releases. Government revisions are
   tracked (shows *"revised from X to Y"*), never silently overwritten.
 - Refresh can run all indicators, a selected subset, or a single indicator from

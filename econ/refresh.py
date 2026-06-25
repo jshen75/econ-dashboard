@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime
 from time import perf_counter
+from zoneinfo import ZoneInfo
 
 from . import sources, store
 from .indicators import INDICATORS
 from .models import Indicator
+
+NY_TZ = ZoneInfo("America/New_York")
 
 
 def refresh_indicator(ind: Indicator) -> dict:
@@ -51,7 +54,7 @@ def refresh_many(indicators: list[Indicator]) -> dict:
     """Refresh selected indicators. Returns a run summary for the UI."""
     store.init_db()
     results = [refresh_indicator(ind) for ind in indicators]
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(NY_TZ).isoformat(timespec="seconds")
     store.set_meta("last_refresh", now)
     return {
         "ran_at": now,

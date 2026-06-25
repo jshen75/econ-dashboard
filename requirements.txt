@@ -3,3 +3,4 @@ httpx>=0.27
 pandas>=2.2
 plotly>=5.24
 psycopg[binary]>=3.2
+xlsxwriter>=3.2

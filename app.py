@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -19,8 +20,12 @@ import streamlit as st
 from econ import refresh, store
 from econ.indicators import INDICATORS, sections
 from econ.models import Indicator, Reading
+from mortgage.page import render_mortgage_page
+from rmbs.page import render_rmbs_page, render_warehouse_page
 
 st.set_page_config(page_title="Econ Dashboard", page_icon="📊", layout="wide")
+
+NY_TZ = ZoneInfo("America/New_York")
 
 store.init_db()
 
@@ -101,6 +106,10 @@ def load_all_readings() -> pd.DataFrame:
 def clear_caches() -> None:
     load_readings.clear()
     load_all_readings.clear()
+
+
+def ny_now() -> datetime:
+    return datetime.now(NY_TZ)
 
 
 def fmt(value, unit: str) -> str:
@@ -212,10 +221,11 @@ def render_explorer() -> None:
 
     pivot = sub.pivot_table(index="period", columns="pick", values="value").sort_index()
     pivot.index = pivot.index.date
-    st.dataframe(pivot, width="stretch")
-    st.download_button(
-        "Download CSV (opens in Excel)", pivot.to_csv().encode(),
-        "econ_explorer.csv", "text/csv")
+    with st.expander("Data table", expanded=False):
+        st.dataframe(pivot, width="stretch")
+        st.download_button(
+            "Download CSV (opens in Excel)", pivot.to_csv().encode(),
+            "econ_explorer.csv", "text/csv")
 
 
 # ---------------------------------------------------------------------------
@@ -306,10 +316,11 @@ def render_curve(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
     with cols[0]:
         st.caption(f"As of {latest_period:%Y-%m-%d}")
         if show_tables:
-            st.dataframe(
-                points.reset_index().rename(
-                    columns={"series": "Maturity", "value": "Yield %"}),
-                hide_index=True, width="stretch")
+            with st.expander("Data table", expanded=False):
+                st.dataframe(
+                    points.reset_index().rename(
+                        columns={"series": "Maturity", "value": "Yield %"}),
+                    hide_index=True, width="stretch")
 
 
 def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
@@ -351,7 +362,8 @@ def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> No
         show["value"] = [fmt(v, u) for v, u in zip(show["value"], show["unit"])]
         show["period"] = show["period"].dt.date
         show = show.drop(columns="unit").rename(columns=str.title)
-        st.dataframe(show, hide_index=True, width="stretch")
+        with st.expander("Data table", expanded=False):
+            st.dataframe(show, hide_index=True, width="stretch")
 
 
 def render_indicator(ind: Indicator, show_tables: bool) -> None:
@@ -399,6 +411,7 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 with st.sidebar:
     st.title("Econ Dashboard")
     st.caption("All the numbers, plus some intuitions.")
+    page = st.radio("Page", ["Macro Dashboard", "Mortgage Calculator", "RMBS", "Warehouse Facility"], index=2)
 
     st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
     st.caption(f"Storage: {store.backend_name()}")
@@ -421,7 +434,7 @@ with st.sidebar:
                     else:
                         st.error("Wrong password.")
 
-    if is_admin():
+    if page == "Macro Dashboard" and is_admin():
         labels_by_key = {ind.key: indicator_label(ind) for ind in INDICATORS}
         selected_keys = st.multiselect(
             "Refresh selected",
@@ -438,35 +451,43 @@ with st.sidebar:
             run_refresh(chosen, "Refreshing selected indicators...")
         if st.session_state.get("last_refresh_summary"):
             summarize_refresh(st.session_state.last_refresh_summary)
-    else:
+    elif page == "Macro Dashboard":
         st.caption("Read-only view. Log in as admin to refresh or edit.")
 
-    chosen_sections = st.multiselect("Sections", sections(), default=sections(),
-                                     help="Filter which sections show below.")
+    if page == "Macro Dashboard":
+        chosen_sections = st.multiselect("Sections", sections(), default=sections(),
+                                         help="Filter which sections show below.")
 
 
 # ---------------------------------------------------------------------------
 # Main page
 # ---------------------------------------------------------------------------
 
-st.title("US Macro Dashboard")
-st.caption(f"Rendered {datetime.now():%Y-%m-%d %H:%M} · "
-           f"{len(INDICATORS)} indicators across {len(sections())} sections")
+if page == "Mortgage Calculator":
+    render_mortgage_page()
+elif page == "RMBS":
+    render_rmbs_page()
+elif page == "Warehouse Facility":
+    render_warehouse_page()
+else:
+    st.title("US Macro Dashboard")
+    st.caption(f"Rendered {ny_now():%Y-%m-%d %H:%M %Z} · "
+               f"{len(INDICATORS)} indicators across {len(sections())} sections")
 
-# Master controls (top of page)
-ctrl1, ctrl2 = st.columns([1, 3])
-show_tables = ctrl1.toggle("Show data tables", value=True,
-                           help="Master switch: hide/show the readings tables everywhere.")
+    # Master controls (top of page)
+    ctrl1, ctrl2 = st.columns([1, 3])
+    show_tables = ctrl1.toggle("Show table panels", value=True,
+                               help="Show closed data-table panels under charts.")
 
-with st.expander("Data Explorer — overlay & download any series", expanded=False):
-    render_explorer()
+    with st.expander("Data Explorer — overlay & download any series", expanded=False):
+        render_explorer()
 
-st.divider()
+    st.divider()
 
-for section in sections():
-    if section not in chosen_sections:
-        continue
-    st.header(section)
-    for ind in INDICATORS:
-        if ind.section == section:
-            render_indicator(ind, show_tables)
+    for section in sections():
+        if section not in chosen_sections:
+            continue
+        st.header(section)
+        for ind in INDICATORS:
+            if ind.section == section:
+                render_indicator(ind, show_tables)
