@@ -22,6 +22,7 @@ from econ.indicators import INDICATORS, sections
 from econ.models import Indicator, Reading
 from mortgage.page import render_mortgage_page
 from rmbs.page import render_rmbs_page, render_warehouse_page
+from rmbs.warehouse_app import render_warehouse_app_page
 
 st.set_page_config(page_title="Econ Dashboard", page_icon="📊", layout="wide")
 
@@ -411,7 +412,11 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 with st.sidebar:
     st.title("Econ Dashboard")
     st.caption("All the numbers, plus some intuitions.")
-    page = st.radio("Page", ["Macro Dashboard", "Mortgage Calculator", "RMBS", "Warehouse Facility"], index=2)
+    page = st.radio(
+        "Page",
+        ["Macro Dashboard", "Mortgage Calculator", "RMBS", "Warehouse Facility", "Warehouse App"],
+        index=2,
+    )
 
     st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
     st.caption(f"Storage: {store.backend_name()}")
@@ -469,6 +474,8 @@ elif page == "RMBS":
     render_rmbs_page()
 elif page == "Warehouse Facility":
     render_warehouse_page()
+elif page == "Warehouse App":
+    render_warehouse_app_page()
 else:
     st.title("US Macro Dashboard")
     st.caption(f"Rendered {ny_now():%Y-%m-%d %H:%M %Z} · "

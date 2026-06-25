@@ -901,7 +901,11 @@ def chart_heading(title: str, formula: str, question: str) -> None:
     )
 
 
-def render_warehouse_view(results: dict[str, object], key_prefix: str = "rmbs") -> None:
+def render_warehouse_view(
+    results: dict[str, object],
+    key_prefix: str = "rmbs",
+    benchmarks: dict[str, float] | None = None,
+) -> None:
     st.markdown("**Warehouse Facility**")
     metrics = results["metrics"]
     schedule: pd.DataFrame = results["schedule"]
@@ -927,7 +931,7 @@ def render_warehouse_view(results: dict[str, object], key_prefix: str = "rmbs") 
     st.plotly_chart(facility_cushion_figure(schedule), width="stretch",
                     key=f"{key_prefix}-facility-cushion")
     chart_heading("Facility Loss vs Pool Loss", *CHART_HELP["Facility Loss vs Pool Loss"])
-    st.plotly_chart(facility_loss_curve_figure(results), width="stretch",
+    st.plotly_chart(facility_loss_curve_figure(results, benchmarks), width="stretch",
                     key=f"{key_prefix}-facility-loss-curve")
 
 
@@ -1088,9 +1092,9 @@ def render_warehouse_analysis_layer(
     with view1:
         render_warehouse_view(results, key_prefix="warehouse-only")
     with view2:
-        render_scenario_a_equity_view(analysis_inputs, results, advance_df, optima)
+        render_scenario_a_equity_view(analysis_inputs, results, advance_df, optima, key_prefix="warehouse-only")
 
-    render_warehouse_stress_view(analysis_inputs)
+    render_warehouse_stress_view(analysis_inputs, key_prefix="warehouse-only")
     render_optimal_advance_section(advance_df, optima, key_prefix="warehouse")
     render_investment_report(analysis_inputs, results, advance_df, optima, full_rmbs=False)
     render_warehouse_assumptions_sources_panel()
@@ -1101,6 +1105,7 @@ def render_scenario_a_equity_view(
     results: dict[str, object],
     advance_df: pd.DataFrame | None = None,
     optima: dict[str, int] | None = None,
+    key_prefix: str = "warehouse",
 ) -> None:
     st.markdown("**Equity Return**")
     metrics = results["metrics"]
@@ -1141,7 +1146,7 @@ def render_scenario_a_equity_view(
     with tab1:
         chart_heading("Leverage Curve", *CHART_HELP["Leverage Curve"])
         st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima), width="stretch",
-                        key="warehouse-leverage-curve")
+                        key=f"{key_prefix}-leverage-curve")
     with tab2:
         chart_heading(
             "Annual Equity Distributions",
@@ -1149,30 +1154,38 @@ def render_scenario_a_equity_view(
             "How much cash equity receives by year, levered versus unlevered.",
         )
         st.plotly_chart(annual_equity_distribution_figure(schedule), width="stretch",
-                        key="warehouse-annual-equity-bars")
+                        key=f"{key_prefix}-annual-equity-bars")
 
 
-def render_warehouse_stress_view(inputs: RmbsInputs) -> None:
+def render_warehouse_stress_view(
+    inputs: RmbsInputs,
+    key_prefix: str = "warehouse",
+    benchmarks: dict[str, float] | None = None,
+) -> None:
     st.markdown("**Stress Readout**")
     h1, h2 = st.columns(2)
     with h1:
-        st.plotly_chart(equity_irr_heatmap_figure(inputs), width="stretch", key="warehouse-equity-heatmap")
+        st.plotly_chart(equity_irr_heatmap_figure(inputs), width="stretch", key=f"{key_prefix}-equity-heatmap")
     with h2:
-        st.plotly_chart(advance_spread_heatmap_figure(inputs), width="stretch", key="warehouse-adv-spread-heatmap")
+        st.plotly_chart(advance_spread_heatmap_figure(inputs), width="stretch",
+                        key=f"{key_prefix}-adv-spread-heatmap")
     h3, h4 = st.columns(2)
     with h3:
-        st.plotly_chart(tornado_figure(inputs), width="stretch", key="warehouse-tornado")
+        st.plotly_chart(tornado_figure(inputs), width="stretch", key=f"{key_prefix}-tornado")
     with h4:
-        st.plotly_chart(named_warehouse_scenario_loss_figure(inputs), width="stretch",
-                        key="warehouse-scenario-loss")
+        st.plotly_chart(named_warehouse_scenario_loss_figure(inputs, benchmarks), width="stretch",
+                        key=f"{key_prefix}-scenario-loss")
     summary = named_warehouse_scenario_summary(inputs)
     st.dataframe(format_table(summary), width="stretch", hide_index=True)
 
 
-def named_warehouse_scenario_loss_figure(inputs: RmbsInputs) -> go.Figure:
+def named_warehouse_scenario_loss_figure(
+    inputs: RmbsInputs,
+    benchmarks: dict[str, float] | None = None,
+) -> go.Figure:
     summary = named_warehouse_scenario_summary(inputs)
     fig = go.Figure(go.Bar(x=summary["Scenario"], y=summary["Cumulative Loss %"], name="Scenario Loss"))
-    for label, value in PRESALE_LOSS_BENCHMARKS.items():
+    for label, value in (benchmarks or PRESALE_LOSS_BENCHMARKS).items():
         fig.add_hline(y=value, line_dash="dot", annotation_text=label, annotation_position="right")
     fig.update_layout(title="Scenario Loss vs Presale Benchmarks", height=340,
                       yaxis_title="Cumulative Net Loss (%)", margin=dict(l=10, r=10, t=42, b=10))
@@ -1196,7 +1209,10 @@ def named_warehouse_scenario_summary(inputs: RmbsInputs) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def advance_optimization(inputs: RmbsInputs) -> tuple[pd.DataFrame, dict[str, int]]:
+def advance_optimization(
+    inputs: RmbsInputs,
+    safety_threshold: float = AAA_SAFETY_THRESHOLD,
+) -> tuple[pd.DataFrame, dict[str, int]]:
     rows = []
     carry_positive = rate(inputs.sofr_pct + inputs.spread_pct) < rate(inputs.gross_coupon_pct)
     for advance in range(78, 93):
@@ -1224,7 +1240,7 @@ def advance_optimization(inputs: RmbsInputs) -> tuple[pd.DataFrame, dict[str, in
             "Initial Equity": scenario.deal_balance * (1 - rate(advance)),
         })
     df = pd.DataFrame(rows)
-    lender_candidates = df[df["Breakeven Loss"] >= AAA_SAFETY_THRESHOLD]
+    lender_candidates = df[df["Breakeven Loss"] >= safety_threshold]
     lender_opt = int(lender_candidates["Advance Rate"].max()) if not lender_candidates.empty else int(df["Advance Rate"].min())
     equity_candidates = df[(df["Initial Equity"] > 0) & (df["Carry Positive"])]
     equity_opt = (
@@ -1246,10 +1262,15 @@ def advance_optimization(inputs: RmbsInputs) -> tuple[pd.DataFrame, dict[str, in
     return df, optima
 
 
-def render_optimal_advance_section(advance_df: pd.DataFrame, optima: dict[str, int], key_prefix: str) -> None:
+def render_optimal_advance_section(
+    advance_df: pd.DataFrame,
+    optima: dict[str, int],
+    key_prefix: str,
+    safety_threshold: float = AAA_SAFETY_THRESHOLD,
+) -> None:
     st.markdown("**Optimal Advance Solver**")
     st.caption(
-        f"Lender threshold uses AAA loss coverage of {AAA_SAFETY_THRESHOLD:.1f}%. "
+        f"Lender threshold uses severe loss coverage of {safety_threshold:.1f}%. "
         "Balanced optimizes levered equity IRR per unit of remaining SEVERE cushion."
     )
     display = advance_df[[
@@ -1297,8 +1318,20 @@ def render_investment_report(
     optima: dict[str, int],
     *,
     full_rmbs: bool,
+    deal_name: str = "OBX 2026-NQM8",
+    benchmarks: dict[str, float] | None = None,
+    safety_threshold: float = AAA_SAFETY_THRESHOLD,
 ) -> None:
-    report = investment_report_markdown(inputs, results, advance_df, optima, full_rmbs=full_rmbs)
+    report = investment_report_markdown(
+        inputs,
+        results,
+        advance_df,
+        optima,
+        full_rmbs=full_rmbs,
+        deal_name=deal_name,
+        benchmarks=benchmarks,
+        safety_threshold=safety_threshold,
+    )
     with st.expander("Investment Report", expanded=False):
         st.markdown(report)
 
@@ -1310,6 +1343,9 @@ def investment_report_markdown(
     optima: dict[str, int],
     *,
     full_rmbs: bool,
+    deal_name: str = "OBX 2026-NQM8",
+    benchmarks: dict[str, float] | None = None,
+    safety_threshold: float = AAA_SAFETY_THRESHOLD,
 ) -> str:
     metrics = results["metrics"]
     schedule: pd.DataFrame = results["schedule"]
@@ -1320,12 +1356,14 @@ def investment_report_markdown(
     stress = report_stress_summary(balanced_inputs)
     current_loss = balanced_metrics["Cumulative Net Loss %"] * 100
     breakeven = structural_breakeven_loss_pct(balanced_inputs)
-    beyond_aaa = "beyond" if breakeven >= AAA_SAFETY_THRESHOLD else "inside"
+    active_benchmarks = benchmarks or PRESALE_LOSS_BENCHMARKS
+    severe_label, severe_value = max(active_benchmarks.items(), key=lambda item: item[1])
+    beyond_aaa = "beyond" if breakeven >= safety_threshold else "inside"
     facility_loss = facility_impairment_pct(balanced_schedule, balanced_metrics)
     recommendation = "fund-with-conditions"
-    if facility_loss > 1e-8 or breakeven < PRESALE_LOSS_BENCHMARKS["AA"]:
+    if facility_loss > 1e-8 or breakeven < min(safety_threshold, severe_value):
         recommendation = "pass"
-    elif breakeven >= AAA_SAFETY_THRESHOLD and balanced_row["SEVERE Cushion Remaining"] >= 0:
+    elif breakeven >= safety_threshold and balanced_row["SEVERE Cushion Remaining"] >= 0:
         recommendation = "fund"
 
     levered_moic = equity_moic(
@@ -1380,6 +1418,8 @@ def investment_report_markdown(
             f"{row['Equity Wiped']} | {row['First Impaired Tranche']} | {row['Facility Takes Loss']} |"
         )
 
+    benchmark_text = ", ".join(f"{label} {value:.2f}%" for label, value in active_benchmarks.items())
+
     takeout = "repaid by the securitization takeout" if full_rmbs else "expected to be repaid by takeout/refinancing execution"
     return f"""
 **1. Recommendation**
@@ -1388,7 +1428,7 @@ def investment_report_markdown(
 
 **2. The Facility**
 
-Facility against ${balanced_inputs.deal_balance / 1_000_000:,.1f}mm of OBX 2026-NQM8 non-QM collateral, sourced from the presale subject-deal column. Collateral quality is FICO {balanced_inputs.wa_fico} / CLTV {balanced_inputs.wa_cltv_pct:.1f}%. Advance is {balanced_rate:.0f}%, SOFR + spread is {balanced_metrics['Facility Rate']:.2%}, and the line is {takeout}.
+Facility against ${balanced_inputs.deal_balance / 1_000_000:,.1f}mm of {deal_name} collateral, sourced from the presale subject-deal column. Collateral quality is FICO {balanced_inputs.wa_fico} / CLTV {balanced_inputs.wa_cltv_pct:.1f}%. Advance is {balanced_rate:.0f}%, SOFR + spread is {balanced_metrics['Facility Rate']:.2%}, and the line is {takeout}.
 
 **3. Return Profile**
 
@@ -1396,7 +1436,7 @@ Warehouse IRR is {balanced_metrics['Facility Rate']:.2%}; facility WAL is {balan
 
 **4. Protection**
 
-Breakeven loss is {breakeven:.1f}% versus presale benchmarks B 0.85%, BBB 3.85%, AA 10.90%, and AAA 14.30%; the structure is protected to {breakeven:.1f}%, {beyond_aaa} AAA. Current modeled cumulative loss is {current_loss:.1f}%.
+Breakeven loss is {breakeven:.1f}% versus parsed presale benchmarks {benchmark_text}; the structure is protected to {breakeven:.1f}%, {beyond_aaa} {severe_label}. Current modeled cumulative loss is {current_loss:.1f}%.
 
 **5. Optimal Structure**
 
@@ -1410,7 +1450,7 @@ Balanced is recommended because it maximizes return per unit of remaining SEVERE
 
 **7. Key Risks**
 
-Negative carry if SOFR plus spread exceeds asset coupon; securitization takeout/execution risk; mark-to-market and spread widening risk; and CA/non-QM concentration risk. Inputs tagged ASSUMED include SOFR, spread, advance, CPR, CDR, severity, yield target, and fees. Inputs tagged SOURCED-from-presale include balance, WA coupon, term, seasoning, FICO, CLTV, DSCR, and stress benchmark context.
+Negative carry if SOFR plus spread exceeds asset coupon; securitization takeout/execution risk; mark-to-market and spread widening risk; and deal-specific product/geographic concentration risk. Inputs tagged ASSUMED include SOFR, spread, advance, CPR, CDR, severity, yield target, and fees. Inputs tagged SOURCED-from-presale include balance, WA coupon, term, seasoning, FICO, CLTV, DSCR, and stress benchmark context.
 
 **8. Conclusion**
 
@@ -1445,11 +1485,11 @@ def analysis_sanity_checks(
     return issues
 
 
-def render_warehouse_assumptions_sources_panel() -> None:
+def render_warehouse_assumptions_sources_panel(deal_name: str = "OBX 2026-NQM8") -> None:
     with st.expander("Assumptions & Sources", expanded=False):
         st.markdown(
-            """
-**Sourced from OBX 2026-NQM8 presale subject-deal column**
+            f"""
+**Sourced from {deal_name} presale subject-deal column**
 
 Deal balance, WA current rate, WA original term, WA seasoning, FICO, CLTV, DSCR, loss-severity stress range, and foreclosure-frequency stress range.
 
@@ -1489,7 +1529,10 @@ def facility_cushion_figure(schedule: pd.DataFrame) -> go.Figure:
     return fig
 
 
-def facility_loss_curve_figure(results: dict[str, object]) -> go.Figure:
+def facility_loss_curve_figure(
+    results: dict[str, object],
+    benchmarks: dict[str, float] | None = None,
+) -> go.Figure:
     metrics = results["metrics"]
     deal_balance = results["inputs"]["deal_balance"]
     initial_facility = metrics["Initial Facility Notional"]
@@ -1500,7 +1543,7 @@ def facility_loss_curve_figure(results: dict[str, object]) -> go.Figure:
         for loss in x_values
     ]
     fig = go.Figure(go.Scatter(x=x_values, y=y_values, mode="lines", name="Facility Loss %"))
-    for label, value in PRESALE_LOSS_BENCHMARKS.items():
+    for label, value in (benchmarks or PRESALE_LOSS_BENCHMARKS).items():
         fig.add_vline(x=value, line_dash="dot", annotation_text=label, annotation_position="top")
     fig.add_vline(
         x=cushion_pct * 100,
