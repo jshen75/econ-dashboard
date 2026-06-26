@@ -3,6 +3,8 @@ import zipfile
 from io import BytesIO
 from xml.etree import ElementTree as ET
 
+import pandas as pd
+
 from rmbs.calculator import RmbsInputs, TRANCHES, project_rmbs_waterfall, tranche_initial_balances
 from rmbs.page import (
     SCENARIO_A_COLUMNS,
@@ -13,10 +15,13 @@ from rmbs.page import (
     build_warehouse_excel_download,
     build_results_object,
     cdr_sensitivity,
+    equity_irr_zero_point_text,
+    investment_report_fact_packet,
     named_warehouse_scenario_summary,
     structural_breakeven_loss_pct,
     warehouse_table,
 )
+from rmbs.report_writer import validate_llm_report
 
 
 class RmbsCalculatorTest(unittest.TestCase):
@@ -117,10 +122,13 @@ class RmbsCalculatorTest(unittest.TestCase):
         table = warehouse_table(schedule)
 
         self.assertIn("Facility Beginning Balance", SCENARIO_A_COLUMNS)
-        self.assertIn("Warehouse Equity Cashflow", SCENARIO_A_COLUMNS)
-        self.assertIn("Unlevered Equity Cashflow", SCENARIO_A_COLUMNS)
+        self.assertIn("Scenario A Levered Equity Cashflow", SCENARIO_A_COLUMNS)
+        self.assertIn("Scenario A Unlevered Equity Cashflow", SCENARIO_A_COLUMNS)
         self.assertIn("Facility Beginning Balance", table.columns)
-        self.assertIn("Warehouse Equity Cashflow", table.columns)
+        self.assertIn("Scenario A Levered Equity Cashflow", table.columns)
+        self.assertIn("Scenario A Unlevered Equity Cashflow", table.columns)
+        self.assertNotIn("Admin Fee", table.columns)
+        self.assertNotIn("Warehouse Equity Cashflow", table.columns)
         self.assertNotIn("Scenario B Debt Proceeds", table.columns)
         self.assertNotIn("Bond Ending Balance", table.columns)
         self.assertNotIn("Payment Mode", table.columns)
@@ -154,6 +162,38 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertEqual(optima["Equity-Optimal"], 92)
         self.assertIn(optima["Balanced-Optimal"], set(advance_df["Advance Rate"]))
         self.assertEqual(analysis_sanity_checks(inputs, results, advance_df, optima), [])
+
+    def test_equity_irr_zero_point_interpolates_advance_crossing(self):
+        advance_df = pd.DataFrame({
+            "Advance Rate": [80.0, 81.0],
+            "Equity IRR": [-0.02, 0.02],
+        })
+
+        self.assertEqual(equity_irr_zero_point_text(advance_df), "80.5% advance")
+
+    def test_investment_report_fact_packet_uses_lender_optimal_recommendation(self):
+        inputs = RmbsInputs()
+        schedule, tranche_summary, metrics = project_rmbs_waterfall(inputs)
+        results = build_results_object(inputs, schedule, tranche_summary, metrics)
+        advance_df, optima = advance_optimization(inputs)
+
+        facts = investment_report_fact_packet(inputs, results, advance_df, optima, full_rmbs=False)
+
+        self.assertEqual(facts["recommendation"]["basis"], "Lender-Optimal")
+        self.assertEqual(facts["recommendation"]["recommended_advance_pct"], optima["Lender-Optimal"])
+        self.assertIn("evidence_boundaries", facts)
+
+    def test_llm_report_validation_rejects_unsupported_market_slop(self):
+        facts = {
+            "recommendation": {
+                "action": "fund",
+                "recommended_advance_pct": 85,
+                "levered_equity_irr": 0.07,
+            }
+        }
+
+        with self.assertRaises(RuntimeError):
+            validate_llm_report("FUND at 85%. This is market-standard.", facts)
 
     def test_sensitivity_analysis_does_not_overflow_irr_solver(self):
         inputs = RmbsInputs()
@@ -207,6 +247,7 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertIn("Formula Reference", workbook_xml)
         self.assertIn("Tranche Cashflows", workbook_xml)
         self.assertIn('state="hidden"', workbook_xml)
+        self.assertNotIn("<pane", scenario_sheet)
         self.assertIn("OBX 2026-NQM8", shared_strings)
         self.assertIn("RMBS requires tranche-level waterfall modeling", shared_strings)
         self.assertIn("PMT(", scenario_sheet)
@@ -230,28 +271,32 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertTrue(workbook.startswith(b"PK"))
         with zipfile.ZipFile(BytesIO(workbook)) as zf:
             workbook_xml = zf.read("xl/workbook.xml").decode()
+            shared_strings = zf.read("xl/sharedStrings.xml").decode()
             scenario_sheet = zf.read("xl/worksheets/sheet1.xml")
-            helper_sheet = zf.read("xl/worksheets/sheet2.xml")
         formulas = sheet_formulas(scenario_sheet)
-        helper_formulas = sheet_formulas(helper_sheet)
 
-        self.assertIn("Scenario A Cashflows", workbook_xml)
-        self.assertIn('state="hidden"', workbook_xml)
+        self.assertNotIn("Scenario A Cashflows", workbook_xml)
+        self.assertNotIn('state="hidden"', workbook_xml)
+        self.assertNotIn(b"<pane", scenario_sheet)
+        self.assertNotIn("Admin Fee", shared_strings)
+        self.assertIn("Scenario A Levered Equity Cashflow", shared_strings)
+        self.assertIn("Scenario A Unlevered Equity Cashflow", shared_strings)
         self.assertEqual(formulas["B8"], "1-(1-$B$7)^(1/12)")
         self.assertEqual(formulas["B10"], "1-(1-$B$9)^(1/12)")
         self.assertEqual(formulas["B12"], "1-$B$11")
         self.assertEqual(formulas["I5"], "$I$3+$I$4")
         self.assertEqual(formulas["I7"], "$B$3*$I$6")
         self.assertEqual(formulas["I8"], "$B$3-$I$7")
-        self.assertEqual(formulas["P4"], "SUM(Z26:Z383)")
-        self.assertEqual(formulas["P13"], "IFERROR(IRR('Scenario A Cashflows'!A2:A360)*12,0)")
-        self.assertEqual(formulas["P14"], "IFERROR(IRR('Scenario A Cashflows'!B2:B360)*12,0)")
+        self.assertEqual(formulas["P4"], "SUM(Y26:Y383)")
+        self.assertIn("LET(cf,_xlfn.VSTACK(-($B$3-$I$7),AL26:AL383)", formulas["P13"])
+        self.assertIn("IFERROR(IRR(cf,0.005)", formulas["P13"])
+        self.assertIn("IFERROR(IRR(cf,-0.005)", formulas["P13"])
+        self.assertTrue(formulas["P13"].endswith("r*12)"))
+        self.assertIn("LET(cf,_xlfn.VSTACK(-$B$3,AM26:AM383)", formulas["P14"])
+        self.assertIn("NA()", formulas["P14"])
         self.assertEqual(formulas["P15"], "$P$13-$P$14")
         self.assertEqual(formulas["A26"], "1")
         self.assertEqual(formulas["D26"], "PMT($B$4/12,$B$5,-$B$3)")
-        self.assertEqual(helper_formulas["A2"], "-('Scenario A Warehouse'!$B$3-'Scenario A Warehouse'!$I$7)")
-        self.assertEqual(helper_formulas["B2"], "-'Scenario A Warehouse'!$B$3")
-        self.assertIn("'Scenario A Warehouse'!", helper_formulas["A3"])
 
     def test_excel_export_uses_correct_base_row_formulas(self):
         inputs = RmbsInputs()
@@ -285,8 +330,13 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertEqual(formulas["AW58"], "AA58-O58-P58")
         self.assertEqual(formulas["AX58"], "AF58")
         self.assertEqual(formulas["AY58"], "IFERROR(AW58*12/AV58,0)")
-        self.assertEqual(formulas["P22"], "IFERROR(IRR('Tranche Cashflows'!U2:U360)*12,0)")
-        self.assertEqual(formulas["P23"], "IFERROR(IRR('Tranche Cashflows'!V2:V360)*12,0)")
+        self.assertIn("LET(cf,'Tranche Cashflows'!U2:U360", formulas["P22"])
+        self.assertIn("IFERROR(IRR(cf,0.005)", formulas["P22"])
+        self.assertIn("NA()", formulas["P22"])
+        self.assertTrue(formulas["P22"].endswith("r*12)"))
+        self.assertIn("LET(cf,'Tranche Cashflows'!V2:V360", formulas["P23"])
+        self.assertIn("IFERROR(IRR(cf,-0.005)", formulas["P23"])
+        self.assertIn("NA()", formulas["P23"])
         self.assertEqual(helper_formulas["U2"], "-('RMBS Scenario'!$B$3-'RMBS Scenario'!$W$7)")
         self.assertEqual(helper_formulas["V2"], "-'RMBS Scenario'!$B$3")
         self.assertEqual(helper_formulas["U3"], "'RMBS Scenario'!AS58")

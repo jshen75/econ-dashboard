@@ -31,6 +31,7 @@ from .calculator import (
     smm,
     tranche_initial_balances,
 )
+from .report_writer import write_llm_investment_report
 
 TRANCHE_SIZE_FIELDS = {
     "A1": "a1_pct",
@@ -166,6 +167,7 @@ WATERFALL_COLUMNS = (
 SCENARIO_A_COLLATERAL_COLUMNS = [
     col for col in COLLATERAL_COLUMNS
     if col not in {
+        "Admin Fee",
         "Payment Mode",
         "Trigger Breached",
         "Interest Available",
@@ -174,11 +176,15 @@ SCENARIO_A_COLLATERAL_COLUMNS = [
     }
 ]
 
+SCENARIO_A_EQUITY_CASHFLOW_COLUMNS = [
+    "Scenario A Levered Equity Cashflow",
+    "Scenario A Unlevered Equity Cashflow",
+]
+
 SCENARIO_A_COLUMNS = (
     SCENARIO_A_COLLATERAL_COLUMNS
     + WAREHOUSE_COLUMNS
-    + WAREHOUSE_EQUITY_COLUMNS
-    + UNLEVERED_EQUITY_COLUMNS
+    + SCENARIO_A_EQUITY_CASHFLOW_COLUMNS
 )
 
 PERCENT_COLUMNS = {
@@ -284,7 +290,6 @@ def render_scenario_a_input_blocks() -> RmbsInputs:
             "Yield Target (Assumed)", "warehouse-yield-target", defaults.yield_target_pct, kind="pct")
         servicing_fee = input_row(
             "Servicing Fee", "warehouse-servicing-fee", defaults.servicing_fee_pct, kind="pct")
-        admin_fee = input_row("Admin Fee", "warehouse-admin-fee", defaults.admin_fee_pct, kind="pct")
 
     with c2:
         st.markdown("**Presale Deal Metrics**")
@@ -323,7 +328,7 @@ def render_scenario_a_input_blocks() -> RmbsInputs:
         severity_pct=severity,
         yield_target_pct=yield_target,
         servicing_fee_pct=servicing_fee,
-        admin_fee_pct=admin_fee,
+        admin_fee_pct=0.0,
         wa_fico=wa_fico,
         wa_cltv_pct=wa_cltv,
         wa_dscr=wa_dscr,
@@ -556,6 +561,8 @@ def render_warehouse_tables(schedule: pd.DataFrame) -> None:
 
 def warehouse_table(schedule: pd.DataFrame) -> pd.DataFrame:
     table = schedule.copy()
+    table["Scenario A Levered Equity Cashflow"] = table["Warehouse Equity Cashflow"]
+    table["Scenario A Unlevered Equity Cashflow"] = table["Unlevered Equity Cashflow"]
     return table[[col for col in SCENARIO_A_COLUMNS if col in table.columns]].copy()
 
 
@@ -639,10 +646,6 @@ KPI_HELP = {
     "MOIC": (
         "SUM(equity_distributions) / initial_equity",
         "Cash multiple. Less than 1.0x means equity lost money.",
-    ),
-    "Payback": (
-        "First period where cumulative equity cashflow >= initial equity",
-        "Years to return the equity check.",
     ),
     "Sponsor Retained": (
         "B-notes + PV(XS/R residual)",
@@ -906,33 +909,11 @@ def render_warehouse_view(
     key_prefix: str = "rmbs",
     benchmarks: dict[str, float] | None = None,
 ) -> None:
-    st.markdown("**Warehouse Facility**")
-    metrics = results["metrics"]
     schedule: pd.DataFrame = results["schedule"]
-    inputs = results["inputs"]
-    peak_exposure = float(schedule["Facility Beginning Balance"].max())
-    cushion = inputs["deal_balance"] - metrics["Initial Facility Notional"]
-    st.markdown(
-        "<div class='rmbs-mini-kpi-grid'>"
-        + analysis_kpi_card("Peak Exposure", f"{number_text(peak_exposure / 1_000_000, 1)}mm",
-                            f"{pct_text(peak_exposure / inputs['deal_balance'])} of pool",
-                            *KPI_HELP["Peak Exposure"])
-        + analysis_kpi_card("Equity Cushion", number_text(cushion, 0),
-                            "Collateral value below facility advance",
-                            *KPI_HELP["Equity Cushion"])
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-
-    chart_heading("Collateral Cashflow Split", *CHART_HELP["Collateral Cashflow Split"])
     st.plotly_chart(facility_cashflow_stack_figure(schedule), width="stretch",
                     key=f"{key_prefix}-facility-cf-stack")
-    chart_heading("Facility vs Collateral Balance", *CHART_HELP["Facility vs Collateral Balance"])
     st.plotly_chart(facility_cushion_figure(schedule), width="stretch",
                     key=f"{key_prefix}-facility-cushion")
-    chart_heading("Facility Loss vs Pool Loss", *CHART_HELP["Facility Loss vs Pool Loss"])
-    st.plotly_chart(facility_loss_curve_figure(results, benchmarks), width="stretch",
-                    key=f"{key_prefix}-facility-loss-curve")
 
 
 def render_equity_view(
@@ -1088,11 +1069,8 @@ def render_warehouse_analysis_layer(
     sanity = analysis_sanity_checks(analysis_inputs, results, advance_df, optima)
 
     render_headline_callouts(analysis_inputs, results, sanity)
-    view1, view2 = st.columns(2)
-    with view1:
-        render_warehouse_view(results, key_prefix="warehouse-only")
-    with view2:
-        render_scenario_a_equity_view(analysis_inputs, results, advance_df, optima, key_prefix="warehouse-only")
+    render_scenario_a_equity_summary(analysis_inputs, results)
+    render_scenario_a_visual_grid(analysis_inputs, results, advance_df, optima, key_prefix="warehouse-only")
 
     render_warehouse_stress_view(analysis_inputs, key_prefix="warehouse-only")
     render_optimal_advance_section(advance_df, optima, key_prefix="warehouse")
@@ -1106,6 +1084,14 @@ def render_scenario_a_equity_view(
     advance_df: pd.DataFrame | None = None,
     optima: dict[str, int] | None = None,
     key_prefix: str = "warehouse",
+) -> None:
+    render_scenario_a_equity_summary(inputs, results)
+    render_scenario_a_visual_grid(inputs, results, advance_df, optima, key_prefix=key_prefix)
+
+
+def render_scenario_a_equity_summary(
+    inputs: RmbsInputs,
+    results: dict[str, object],
 ) -> None:
     st.markdown("**Equity Return**")
     metrics = results["metrics"]
@@ -1121,38 +1107,42 @@ def render_scenario_a_equity_view(
     st.markdown(
         "<div class='rmbs-mini-kpi-grid'>"
         + analysis_kpi_card(
-            "Leverage Pickup",
-            pct_text(metrics["Scenario A Leverage Premium"]),
-            "Levered IRR less unlevered IRR",
-            *KPI_HELP["Leverage Pickup"],
+            "Levered / Unlevered IRR",
+            f"{pct_text(metrics['Scenario A Equity IRR - Levered'])} / "
+            f"{pct_text(metrics['Scenario A Equity IRR - Unlevered'])}",
+            f"Spread {pct_text(metrics['Scenario A Leverage Premium'])}",
         )
         + analysis_kpi_card(
             "MOIC",
             f"{levered_moic:.2f}x / {unlevered_moic:.2f}x",
             "Levered / unlevered",
-            *KPI_HELP["MOIC"],
-        )
-        + analysis_kpi_card(
-            "Payback",
-            payback_text(-metrics["Warehouse Equity / Haircut"], schedule["Warehouse Equity Cashflow"]),
-            "Levered equity cashflow",
-            *KPI_HELP["Payback"],
         )
         + "</div>",
         unsafe_allow_html=True,
     )
 
-    tab1, tab2 = st.tabs(["IRR vs Advance", "Annual Cashflow"])
-    with tab1:
-        chart_heading("Leverage Curve", *CHART_HELP["Leverage Curve"])
-        st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima), width="stretch",
+
+def render_scenario_a_visual_grid(
+    inputs: RmbsInputs,
+    results: dict[str, object],
+    advance_df: pd.DataFrame | None = None,
+    optima: dict[str, int] | None = None,
+    key_prefix: str = "warehouse",
+) -> None:
+    schedule: pd.DataFrame = results["schedule"]
+    top_left, top_right = st.columns(2)
+    with top_left:
+        st.plotly_chart(facility_cashflow_stack_figure(schedule), width="stretch",
+                        key=f"{key_prefix}-facility-cf-stack")
+    with top_right:
+        st.plotly_chart(facility_cushion_figure(schedule), width="stretch",
+                        key=f"{key_prefix}-facility-cushion")
+
+    bottom_left, bottom_right = st.columns(2)
+    with bottom_left:
+        st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima, show_optima=False), width="stretch",
                         key=f"{key_prefix}-leverage-curve")
-    with tab2:
-        chart_heading(
-            "Annual Equity Distributions",
-            "annual_equity_distribution = SUM(monthly_equity_cashflow by year)",
-            "How much cash equity receives by year, levered versus unlevered.",
-        )
+    with bottom_right:
         st.plotly_chart(annual_equity_distribution_figure(schedule), width="stretch",
                         key=f"{key_prefix}-annual-equity-bars")
 
@@ -1290,6 +1280,35 @@ def render_optimal_advance_section(
     st.dataframe(format_table(display), width="stretch", hide_index=True)
 
 
+def equity_irr_zero_point_text(advance_df: pd.DataFrame) -> str:
+    df = advance_df[["Advance Rate", "Equity IRR"]].dropna().sort_values("Advance Rate")
+    if df.empty:
+        return "not available"
+    first = df.iloc[0]
+    last = df.iloc[-1]
+    if abs(float(first["Equity IRR"])) < 1e-9:
+        return f"{float(first['Advance Rate']):.1f}% advance"
+    previous = first
+    for _, row in df.iloc[1:].iterrows():
+        prev_irr = float(previous["Equity IRR"])
+        curr_irr = float(row["Equity IRR"])
+        if abs(curr_irr) < 1e-9:
+            return f"{float(row['Advance Rate']):.1f}% advance"
+        if prev_irr * curr_irr < 0:
+            prev_advance = float(previous["Advance Rate"])
+            curr_advance = float(row["Advance Rate"])
+            zero_advance = prev_advance + (0 - prev_irr) * (curr_advance - prev_advance) / (curr_irr - prev_irr)
+            return f"{zero_advance:.1f}% advance"
+        previous = row
+    min_irr = float(df["Equity IRR"].min())
+    max_irr = float(df["Equity IRR"].max())
+    if min_irr > 0:
+        return f"not reached in the {float(first['Advance Rate']):.0f}-{float(last['Advance Rate']):.0f}% advance sweep"
+    if max_irr < 0:
+        return f"below {float(first['Advance Rate']):.0f}% advance; equity IRR is negative across the modeled sweep"
+    return "not reached in the modeled sweep"
+
+
 def structural_breakeven_loss_pct(inputs: RmbsInputs) -> float:
     return max(0.0, 100 - inputs.advance_rate_pct)
 
@@ -1321,8 +1340,10 @@ def render_investment_report(
     deal_name: str = "OBX 2026-NQM8",
     benchmarks: dict[str, float] | None = None,
     safety_threshold: float = AAA_SAFETY_THRESHOLD,
+    llm_api_key: str | None = None,
+    report_key: str = "investment-report",
 ) -> None:
-    report = investment_report_markdown(
+    facts = investment_report_fact_packet(
         inputs,
         results,
         advance_df,
@@ -1332,8 +1353,227 @@ def render_investment_report(
         benchmarks=benchmarks,
         safety_threshold=safety_threshold,
     )
+    fallback = deterministic_investment_report_markdown(facts)
     with st.expander("Investment Report", expanded=False):
+        report = fallback
+        if llm_api_key:
+            import hashlib
+            import json
+            from .presale_store import json_safe
+
+            fact_hash = hashlib.sha256(json.dumps(json_safe(facts), sort_keys=True).encode()).hexdigest()
+            cache_key = f"{report_key}-llm-report"
+            hash_key = f"{report_key}-llm-report-hash"
+            if st.session_state.get(hash_key) != fact_hash or cache_key not in st.session_state:
+                try:
+                    with st.spinner("Writing concise report with Claude Sonnet 4.6..."):
+                        st.session_state[cache_key] = write_llm_investment_report(facts, llm_api_key)
+                        st.session_state[hash_key] = fact_hash
+                        st.session_state.pop(f"{report_key}-llm-report-error", None)
+                except Exception as exc:
+                    st.session_state[f"{report_key}-llm-report-error"] = str(exc)
+            if st.session_state.get(cache_key) and st.session_state.get(hash_key) == fact_hash:
+                report = st.session_state[cache_key]
+            if st.session_state.get(f"{report_key}-llm-report-error"):
+                st.warning(
+                    "Claude report unavailable; showing deterministic fallback. "
+                    f"{st.session_state[f'{report_key}-llm-report-error']}"
+                )
         st.markdown(report)
+
+
+def investment_report_fact_packet(
+    inputs: RmbsInputs,
+    results: dict[str, object],
+    advance_df: pd.DataFrame,
+    optima: dict[str, int],
+    *,
+    full_rmbs: bool,
+    deal_name: str = "OBX 2026-NQM8",
+    benchmarks: dict[str, float] | None = None,
+    safety_threshold: float = AAA_SAFETY_THRESHOLD,
+) -> dict[str, object]:
+    metrics = results["metrics"]
+    recommended_rate = optima["Lender-Optimal"]
+    recommended_inputs = RmbsInputs(**{**asdict(inputs), "advance_rate_pct": float(recommended_rate)})
+    recommended_schedule, recommended_tranche_summary, recommended_metrics = project_rmbs_waterfall(recommended_inputs)
+    recommended_row = advance_df.loc[advance_df["Advance Rate"] == recommended_rate].iloc[0]
+    stress = report_stress_summary(recommended_inputs)
+    current_loss = recommended_metrics["Cumulative Net Loss %"] * 100
+    breakeven = structural_breakeven_loss_pct(recommended_inputs)
+    active_benchmarks = benchmarks or PRESALE_LOSS_BENCHMARKS
+    severe_label, severe_value = max(active_benchmarks.items(), key=lambda item: item[1])
+    beyond_aaa = "beyond" if breakeven >= safety_threshold else "inside"
+    facility_loss = facility_impairment_pct(recommended_schedule, recommended_metrics)
+    recommended_equity_irr = recommended_metrics["Scenario A Equity IRR - Levered"]
+    equity_zero_point = equity_irr_zero_point_text(advance_df)
+    recommendation = "fund-with-conditions"
+    if recommended_equity_irr < 0:
+        recommendation = "pass"
+        recommendation_detail = (
+            f"equity investor would not want to fund this structure because levered equity IRR is "
+            f"{recommended_equity_irr:.2%}, below 0%."
+        )
+    elif facility_loss > 1e-8 or breakeven < min(safety_threshold, severe_value):
+        recommendation = "pass"
+        recommendation_detail = "facility protection does not clear the modeled loss coverage test."
+    elif breakeven >= safety_threshold and recommended_row["SEVERE Cushion Remaining"] >= 0:
+        recommendation = "fund"
+        recommendation_detail = "facility protection clears the severe loss benchmark and modeled equity IRR is positive."
+    else:
+        recommendation_detail = "fund only with tighter advance, pricing, or takeout conditions."
+
+    levered_moic = equity_moic(
+        -recommended_metrics["Warehouse Equity / Haircut"],
+        recommended_schedule.loc[recommended_schedule["Period"] > 0, "Warehouse Equity Cashflow"],
+    )
+    unlevered_moic = equity_moic(
+        -recommended_inputs.deal_balance,
+        recommended_schedule.loc[recommended_schedule["Period"] > 0, "Unlevered Equity Cashflow"],
+    )
+    next_row = advance_df.loc[advance_df["Advance Rate"] == recommended_rate + 1]
+    if next_row.empty:
+        one_pct = "At the recommended point, an extra 1% advance is outside the modeled sweep."
+    else:
+        next_row = next_row.iloc[0]
+        irr_delta = (next_row["Equity IRR"] - recommended_row["Equity IRR"]) * 100
+        cushion_delta = next_row["Breakeven Loss"] - recommended_row["Breakeven Loss"]
+        one_pct = (
+            f"Each extra 1% advance near the recommendation adds about {irr_delta:.2f} pts of levered equity IRR "
+            f"and costs {abs(cushion_delta):.1f} pt of breakeven loss cushion."
+        )
+
+    opt_table = advance_df[[
+        "Advance Rate", "Equity IRR", "Breakeven Loss", "Facility IRR", "SEVERE Cushion Remaining"
+    ]].copy()
+    opt_table["Flag"] = opt_table["Advance Rate"].map(
+        lambda advance: ", ".join(label for label, value in optima.items() if value == advance)
+    )
+    takeout = "repaid by the securitization takeout" if full_rmbs else "expected to be repaid by takeout/refinancing execution"
+    return {
+        "deal": {
+            "name": deal_name,
+            "balance_mm": recommended_inputs.deal_balance / 1_000_000,
+            "fico": recommended_inputs.wa_fico,
+            "cltv_pct": recommended_inputs.wa_cltv_pct,
+            "source_state": "balance, coupon, term, seasoning, FICO, CLTV, DSCR, and stress context are sourced from the parsed presale when present; SOFR, spread, advance, CPR, CDR, severity, yield target, and fees are assumptions.",
+        },
+        "recommendation": {
+            "action": recommendation,
+            "recommended_advance_pct": recommended_rate,
+            "basis": "Lender-Optimal",
+            "detail": recommendation_detail,
+            "warehouse_irr": recommended_metrics["Facility Rate"],
+            "levered_equity_irr": recommended_equity_irr,
+        },
+        "facility": {
+            "takeout": takeout,
+            "rate": recommended_metrics["Facility Rate"],
+            "wal_years": recommended_metrics["Facility WAL"],
+            "facility_loss_pct": facility_loss,
+            "breakeven_loss_pct": breakeven,
+            "current_modeled_loss_pct": current_loss,
+            "severe_benchmark_label": severe_label,
+            "severe_benchmark_pct": severe_value,
+            "breakeven_vs_severe_benchmark": beyond_aaa,
+        },
+        "returns": {
+            "levered_equity_irr": recommended_equity_irr,
+            "unlevered_equity_irr": recommended_metrics["Scenario A Equity IRR - Unlevered"],
+            "leverage_pickup": recommended_metrics["Scenario A Leverage Premium"],
+            "levered_moic": levered_moic,
+            "unlevered_moic": unlevered_moic,
+            "equity_irr_zero_point": equity_zero_point,
+        },
+        "benchmarks": active_benchmarks,
+        "optima": [
+            {
+                "advance_rate_pct": float(row["Advance Rate"]),
+                "equity_irr": float(row["Equity IRR"]),
+                "breakeven_loss_pct": float(row["Breakeven Loss"]),
+                "facility_irr": float(row["Facility IRR"]),
+                "severe_cushion_remaining_pct": float(row["SEVERE Cushion Remaining"]),
+                "flag": str(row["Flag"]),
+            }
+            for _, row in opt_table.iterrows()
+            if row["Flag"]
+        ],
+        "one_percent_advance_comment": one_pct,
+        "stress_summary": stress.to_dict("records"),
+        "risks": [
+            "negative carry if SOFR plus spread exceeds asset coupon",
+            "takeout/refinancing execution risk",
+            "mark-to-market and spread widening risk",
+            "deal-specific product/geographic concentration risk",
+        ],
+        "evidence_boundaries": [
+            "Do not infer missing presale fields as zero.",
+            "Do not import external benchmark ranges or market-practice claims.",
+            "When conviction is low, state the missing evidence and why it matters.",
+        ],
+    }
+
+
+def deterministic_investment_report_markdown(facts: dict[str, object]) -> str:
+    recommendation = facts["recommendation"]
+    deal = facts["deal"]
+    facility = facts["facility"]
+    returns = facts["returns"]
+    benchmark_text = ", ".join(f"{label} {value:.2f}%" for label, value in facts["benchmarks"].items())
+    opt_lines = [
+        "| Advance | Equity IRR | Breakeven | Facility IRR | SEVERE Cushion | Flag |",
+        "|---:|---:|---:|---:|---:|---|",
+    ]
+    for row in facts["optima"]:
+        opt_lines.append(
+            f"| {row['advance_rate_pct']:.0f}% | {row['equity_irr']:.2%} | "
+            f"{row['breakeven_loss_pct']:.1f}% | {row['facility_irr']:.2%} | "
+            f"{row['severe_cushion_remaining_pct']:.1f}% | {row['flag']} |"
+        )
+    stress_lines = [
+        "| Scenario | Facility IRR | Equity IRR | Equity Wiped | First Impaired Tranche | Facility Loss? |",
+        "|---|---:|---:|---|---|---|",
+    ]
+    for row in facts["stress_summary"]:
+        stress_lines.append(
+            f"| {row['Scenario']} | {row['Facility IRR']:.2%} | {row['Equity IRR (Lev)']:.2%} | "
+            f"{row['Equity Wiped']} | {row['First Impaired Tranche']} | {row['Facility Takes Loss']} |"
+        )
+    return f"""
+**1. Recommendation**
+
+{str(recommendation['action']).upper()}: recommend a {recommendation['recommended_advance_pct']:.0f}% advance. At that structure, warehouse IRR is {recommendation['warehouse_irr']:.2%} and levered equity IRR is {recommendation['levered_equity_irr']:.2%}; {recommendation['detail']}
+
+**2. The Facility**
+
+Facility against ${deal['balance_mm']:,.1f}mm of {deal['name']} collateral, sourced from the presale subject-deal column. Collateral quality is FICO {deal['fico']} / CLTV {deal['cltv_pct']:.1f}%. Advance is {recommendation['recommended_advance_pct']:.0f}%, SOFR + spread is {facility['rate']:.2%}, and the line is {facility['takeout']}.
+
+**3. Return Profile**
+
+Warehouse IRR is {facility['rate']:.2%}; facility WAL is {facility['wal_years']:.2f} years. Equity levered IRR is {returns['levered_equity_irr']:.2%} versus unlevered IRR of {returns['unlevered_equity_irr']:.2%}, for {returns['leverage_pickup']:.2%} leverage pickup. Levered / unlevered MOIC is {returns['levered_moic']:.2f}x / {returns['unlevered_moic']:.2f}x. The equity IRR zero point is {returns['equity_irr_zero_point']}.
+
+**4. Protection**
+
+Breakeven loss is {facility['breakeven_loss_pct']:.1f}% versus parsed presale benchmarks {benchmark_text}; the structure is protected to {facility['breakeven_loss_pct']:.1f}%, {facility['breakeven_vs_severe_benchmark']} {facility['severe_benchmark_label']}. Current modeled cumulative loss is {facility['current_modeled_loss_pct']:.1f}%.
+
+**5. Optimal Structure**
+
+{chr(10).join(opt_lines)}
+
+Lender-optimal is recommended because it is the highest advance in the sweep that still clears the severe loss coverage threshold. {facts['one_percent_advance_comment']}
+
+**6. Stress Summary**
+
+{chr(10).join(stress_lines)}
+
+**7. Key Risks**
+
+Negative carry if SOFR plus spread exceeds asset coupon; securitization takeout/execution risk; mark-to-market and spread widening risk; and deal-specific product/geographic concentration risk. Inputs tagged ASSUMED include SOFR, spread, advance, CPR, CDR, severity, yield target, and fees. Inputs tagged SOURCED-from-presale include balance, WA coupon, term, seasoning, FICO, CLTV, DSCR, and stress benchmark context.
+
+**8. Conclusion**
+
+The thesis is a warehouse line protected by first-loss sponsor equity and repaid through takeout execution. Recommended advance is {recommendation['recommended_advance_pct']:.0f}%, with {facility['rate']:.2%} warehouse IRR, {returns['levered_equity_irr']:.2%} levered equity IRR, and {facility['breakeven_loss_pct']:.1f}% structural breakeven loss.
+"""
 
 
 def investment_report_markdown(
@@ -1347,115 +1587,18 @@ def investment_report_markdown(
     benchmarks: dict[str, float] | None = None,
     safety_threshold: float = AAA_SAFETY_THRESHOLD,
 ) -> str:
-    metrics = results["metrics"]
-    schedule: pd.DataFrame = results["schedule"]
-    balanced_rate = optima["Balanced-Optimal"]
-    balanced_inputs = RmbsInputs(**{**asdict(inputs), "advance_rate_pct": float(balanced_rate)})
-    balanced_schedule, balanced_tranche_summary, balanced_metrics = project_rmbs_waterfall(balanced_inputs)
-    balanced_row = advance_df.loc[advance_df["Advance Rate"] == balanced_rate].iloc[0]
-    stress = report_stress_summary(balanced_inputs)
-    current_loss = balanced_metrics["Cumulative Net Loss %"] * 100
-    breakeven = structural_breakeven_loss_pct(balanced_inputs)
-    active_benchmarks = benchmarks or PRESALE_LOSS_BENCHMARKS
-    severe_label, severe_value = max(active_benchmarks.items(), key=lambda item: item[1])
-    beyond_aaa = "beyond" if breakeven >= safety_threshold else "inside"
-    facility_loss = facility_impairment_pct(balanced_schedule, balanced_metrics)
-    recommendation = "fund-with-conditions"
-    if facility_loss > 1e-8 or breakeven < min(safety_threshold, severe_value):
-        recommendation = "pass"
-    elif breakeven >= safety_threshold and balanced_row["SEVERE Cushion Remaining"] >= 0:
-        recommendation = "fund"
-
-    levered_moic = equity_moic(
-        -balanced_metrics["Warehouse Equity / Haircut"],
-        balanced_schedule.loc[balanced_schedule["Period"] > 0, "Warehouse Equity Cashflow"],
-    )
-    unlevered_moic = equity_moic(
-        -balanced_inputs.deal_balance,
-        balanced_schedule.loc[balanced_schedule["Period"] > 0, "Unlevered Equity Cashflow"],
-    )
-    payback = payback_text(
-        -balanced_metrics["Warehouse Equity / Haircut"],
-        balanced_schedule["Warehouse Equity Cashflow"],
-    )
-    next_row = advance_df.loc[advance_df["Advance Rate"] == balanced_rate + 1]
-    if next_row.empty:
-        one_pct = "At the recommended point, an extra 1% advance is outside the modeled sweep."
-    else:
-        next_row = next_row.iloc[0]
-        irr_delta = (next_row["Equity IRR"] - balanced_row["Equity IRR"]) * 100
-        cushion_delta = next_row["Breakeven Loss"] - balanced_row["Breakeven Loss"]
-        one_pct = (
-            f"Each extra 1% advance near the recommendation adds about {irr_delta:.2f} pts of levered equity IRR "
-            f"and costs {abs(cushion_delta):.1f} pt of breakeven loss cushion."
+    return deterministic_investment_report_markdown(
+        investment_report_fact_packet(
+            inputs,
+            results,
+            advance_df,
+            optima,
+            full_rmbs=full_rmbs,
+            deal_name=deal_name,
+            benchmarks=benchmarks,
+            safety_threshold=safety_threshold,
         )
-
-    opt_table = advance_df[[
-        "Advance Rate", "Equity IRR", "Breakeven Loss", "Facility IRR", "SEVERE Cushion Remaining"
-    ]].copy()
-    opt_table["Flag"] = opt_table["Advance Rate"].map(
-        lambda advance: ", ".join(label for label, value in optima.items() if value == advance)
     )
-    opt_lines = [
-        "| Advance | Equity IRR | Breakeven | Facility IRR | SEVERE Cushion | Flag |",
-        "|---:|---:|---:|---:|---:|---|",
-    ]
-    for _, row in opt_table.iterrows():
-        if not row["Flag"]:
-            continue
-        opt_lines.append(
-            f"| {row['Advance Rate']:.0f}% | {row['Equity IRR']:.2%} | {row['Breakeven Loss']:.1f}% | "
-            f"{row['Facility IRR']:.2%} | {row['SEVERE Cushion Remaining']:.1f}% | {row['Flag']} |"
-        )
-
-    stress_lines = [
-        "| Scenario | Facility IRR | Equity IRR | Equity Wiped | First Impaired Tranche | Facility Loss? |",
-        "|---|---:|---:|---|---|---|",
-    ]
-    for _, row in stress.iterrows():
-        stress_lines.append(
-            f"| {row['Scenario']} | {row['Facility IRR']:.2%} | {row['Equity IRR (Lev)']:.2%} | "
-            f"{row['Equity Wiped']} | {row['First Impaired Tranche']} | {row['Facility Takes Loss']} |"
-        )
-
-    benchmark_text = ", ".join(f"{label} {value:.2f}%" for label, value in active_benchmarks.items())
-
-    takeout = "repaid by the securitization takeout" if full_rmbs else "expected to be repaid by takeout/refinancing execution"
-    return f"""
-**1. Recommendation**
-
-{recommendation.upper()}: recommend a {balanced_rate:.0f}% advance. At that structure, warehouse IRR is {balanced_metrics['Facility Rate']:.2%} and levered equity IRR is {balanced_metrics['Scenario A Equity IRR - Levered']:.2%}.
-
-**2. The Facility**
-
-Facility against ${balanced_inputs.deal_balance / 1_000_000:,.1f}mm of {deal_name} collateral, sourced from the presale subject-deal column. Collateral quality is FICO {balanced_inputs.wa_fico} / CLTV {balanced_inputs.wa_cltv_pct:.1f}%. Advance is {balanced_rate:.0f}%, SOFR + spread is {balanced_metrics['Facility Rate']:.2%}, and the line is {takeout}.
-
-**3. Return Profile**
-
-Warehouse IRR is {balanced_metrics['Facility Rate']:.2%}; facility WAL is {balanced_metrics['Facility WAL']:.2f} years. Equity levered IRR is {balanced_metrics['Scenario A Equity IRR - Levered']:.2%} versus unlevered IRR of {balanced_metrics['Scenario A Equity IRR - Unlevered']:.2%}, for {balanced_metrics['Scenario A Leverage Premium']:.2%} leverage pickup. Levered / unlevered MOIC is {levered_moic:.2f}x / {unlevered_moic:.2f}x. Levered payback is {payback}.
-
-**4. Protection**
-
-Breakeven loss is {breakeven:.1f}% versus parsed presale benchmarks {benchmark_text}; the structure is protected to {breakeven:.1f}%, {beyond_aaa} {severe_label}. Current modeled cumulative loss is {current_loss:.1f}%.
-
-**5. Optimal Structure**
-
-{chr(10).join(opt_lines)}
-
-Balanced is recommended because it maximizes return per unit of remaining SEVERE cushion within the 78-92% sweep. {one_pct}
-
-**6. Stress Summary**
-
-{chr(10).join(stress_lines)}
-
-**7. Key Risks**
-
-Negative carry if SOFR plus spread exceeds asset coupon; securitization takeout/execution risk; mark-to-market and spread widening risk; and deal-specific product/geographic concentration risk. Inputs tagged ASSUMED include SOFR, spread, advance, CPR, CDR, severity, yield target, and fees. Inputs tagged SOURCED-from-presale include balance, WA coupon, term, seasoning, FICO, CLTV, DSCR, and stress benchmark context.
-
-**8. Conclusion**
-
-The thesis is a warehouse line protected by first-loss sponsor equity and repaid through takeout execution. Recommended advance is {balanced_rate:.0f}%, with {balanced_metrics['Facility Rate']:.2%} warehouse IRR, {balanced_metrics['Scenario A Equity IRR - Levered']:.2%} levered equity IRR, and {breakeven:.1f}% structural breakeven loss.
-"""
 
 
 def analysis_sanity_checks(
@@ -1495,11 +1638,11 @@ Deal balance, WA current rate, WA original term, WA seasoning, FICO, CLTV, DSCR,
 
 **ASSUMED - seed / range / confirm desk**
 
-SOFR, financing spread, advance rate, CPR, annual CDR, yield target, and servicing/admin fees. These are desk/market assumptions and are not sourced from the presale.
+SOFR, financing spread, advance rate, CPR, annual CDR, and yield target remain desk/market assumptions. Servicing fee is used when explicitly parsed; admin fee is not modeled in the Warehouse App because it is not consistently disclosed in presales.
 
 **Scenario A scope**
 
-This tab is the pre-securitization warehouse view only. It answers lender advance/loss/WAL questions and sponsor levered-vs-unlevered equity economics while the whole-loan pool is financed on balance sheet. Tranche sizing, exchangeable certificates, XS/R, and securitization takeout mechanics are intentionally excluded here and remain in the full RMBS tab.
+This tab is the pre-securitization warehouse view only. It answers lender advance/loss/WAL questions and sponsor levered-vs-unlevered equity economics while the whole-loan pool is financed on balance sheet. Exchangeable certificate labels such as A-1A and A-1B are not additive debt; the stack view uses the non-overlapping CE-gap tranches.
             """
         )
 
@@ -1562,15 +1705,17 @@ def leverage_curve_figure(
     inputs: RmbsInputs,
     advance_df: pd.DataFrame | None = None,
     optima: dict[str, int] | None = None,
+    show_optima: bool = True,
 ) -> go.Figure:
     df = advance_df if advance_df is not None else advance_optimization(inputs)[0]
     fig = go.Figure(go.Scatter(
         x=df["Advance Rate"],
         y=df["Equity IRR"] * 100,
-        mode="lines+markers",
+        mode="lines",
         name="Levered Equity IRR",
+        line=dict(width=3, color="#dc2626"),
     ))
-    if optima:
+    if show_optima and optima:
         marker_specs = {
             "Lender-Optimal": ("Lender", "#2563eb"),
             "Equity-Optimal": ("Equity", "#dc2626"),
@@ -1590,7 +1735,7 @@ def leverage_curve_figure(
                 textposition="top center",
                 name=label,
             ))
-    fig.update_layout(title="", height=300, xaxis_title="Advance Rate (%)",
+    fig.update_layout(title="Leverage Curve", height=300, xaxis_title="Advance Rate (%)",
                       yaxis_title="Levered Equity IRR (%)", margin=dict(l=10, r=10, t=42, b=10))
     return fig
 
@@ -1604,7 +1749,7 @@ def annual_equity_distribution_figure(schedule: pd.DataFrame) -> go.Figure:
                          name="Levered"))
     fig.add_trace(go.Bar(x=annual["Year"], y=annual["Unlevered Equity Cashflow"] / 1_000_000,
                          name="Unlevered"))
-    fig.update_layout(title="Annual Equity Distributions", height=300, barmode="group",
+    fig.update_layout(title="Annual Cashflow", height=300, barmode="group",
                       xaxis_title="Year", yaxis_title="$mm", margin=dict(l=10, r=10, t=42, b=10))
     return fig
 
@@ -1764,15 +1909,6 @@ def equity_moic(initial_outflow: float, cashflows: pd.Series) -> float:
     return float(cashflows[cashflows > 0].sum() / abs(initial_outflow))
 
 
-def payback_text(initial_outflow: float, cashflows: pd.Series) -> str:
-    cumulative = initial_outflow
-    for idx, cf in enumerate(cashflows, start=0):
-        cumulative += cf
-        if idx > 0 and cumulative >= 0:
-            return f"{idx / 12:.2f} yrs"
-    return "Not reached"
-
-
 def first_impaired_tranche(tranche_summary: pd.DataFrame) -> str:
     summary = tranche_summary.set_index("Class")
     for tranche in reversed(TRANCHES):
@@ -1800,11 +1936,11 @@ Facility Rate = SOFR + Spread. Initial Facility Notional = Deal Balance x Advanc
 
 **Sponsor equity**
 
-Levered equity is the sponsor residual after the warehouse facility. Its initial equity check is the haircut, and monthly cashflow is Asset Total Cashflow minus Facility Total Cashflow. Unlevered equity assumes the sponsor owns 100% of the same pool with no facility; monthly cashflow is Asset Total Cashflow less servicing and admin fees. The difference between levered and unlevered equity IRR is the gross leverage premium of the warehouse financing.
+Levered equity is the sponsor residual after the warehouse facility. Its initial equity check is the haircut, and monthly cashflow is Asset Total Cashflow minus Facility Total Cashflow. Unlevered equity assumes the sponsor owns 100% of the same pool with no facility; monthly cashflow is Asset Total Cashflow less servicing fee. Admin fee is not modeled in Scenario A because it is not consistently disclosed in presales. The difference between levered and unlevered equity IRR is the gross leverage premium of the warehouse financing.
 
 **Not from the presale**
 
-SOFR, financing spread, advance rate, CPR, annual CDR, yield target, and servicing/admin fees are model assumptions. They should be replaced with desk or diligence inputs when available.
+SOFR, financing spread, advance rate, CPR, annual CDR, yield target, and servicing fee are model assumptions. They should be replaced with desk or diligence inputs when available.
             """
         )
 
@@ -2173,8 +2309,6 @@ def build_warehouse_excel_download(
     workbook.set_calc_mode("auto")
     ws = workbook.add_worksheet("Scenario A Warehouse")
     ws.hide_gridlines(2)
-    cashflow_ws = workbook.add_worksheet("Scenario A Cashflows")
-    cashflow_ws.hide()
 
     title_fmt = workbook.add_format({"bold": True, "font_size": 11})
     note_fmt = workbook.add_format({"italic": True, "font_color": "#555555", "text_wrap": True})
@@ -2234,7 +2368,6 @@ def build_warehouse_excel_download(
         "recoveries": "$B$12",
         "yield_target": "$B$13",
         "servicing_fee": "$B$14",
-        "admin_fee": "$B$15",
         "sofr": "$I$3",
         "spread": "$I$4",
         "facility_rate": "$I$5",
@@ -2242,8 +2375,12 @@ def build_warehouse_excel_download(
         "initial_facility": "$I$7",
         "purchase_price": "$P$4",
     }
-    levered_equity_irr_range = f"'Scenario A Cashflows'!A2:A{len(table) + 2}"
-    unlevered_equity_irr_range = f"'Scenario A Cashflows'!B2:B{len(table) + 2}"
+    levered_equity_irr_range = (
+        f"VSTACK(-($B$3-$I$7),{table_refs['Scenario A Levered Equity Cashflow']})"
+    )
+    unlevered_equity_irr_range = (
+        f"VSTACK(-$B$3,{table_refs['Scenario A Unlevered Equity Cashflow']})"
+    )
 
     write_box(ws, 0, 0, "Collateral / Credit Inputs", [
         ("Deal Balance", inputs.deal_balance, input_money_fmt),
@@ -2258,7 +2395,6 @@ def build_warehouse_excel_download(
         ("Recoveries", 1 - rate(inputs.severity_pct), calc_pct_fmt, "=1-$B$11"),
         ("Yield Target", inputs.yield_target_pct / 100, input_pct_fmt),
         ("Servicing Fee", inputs.servicing_fee_pct / 100, input_pct_fmt),
-        ("Admin Fee", inputs.admin_fee_pct / 100, input_pct_fmt),
     ], title_fmt, label_fmt)
 
     write_box(ws, 0, 7, "Warehouse Facility", [
@@ -2293,9 +2429,9 @@ def build_warehouse_excel_download(
         ("Lender Loss ($)", metrics["Facility / Lender Loss $"], calc_fmt,
          f"=SUM({table_refs['Facility Interest Shortfall']})"),
         ("Levered Equity IRR", metrics["Scenario A Equity IRR - Levered"], calc_pct_fmt,
-         f"=IFERROR(IRR({levered_equity_irr_range})*12,0)"),
+         excel_irr_ladder_formula(levered_equity_irr_range)),
         ("Unlevered Equity IRR", metrics["Scenario A Equity IRR - Unlevered"], calc_pct_fmt,
-         f"=IFERROR(IRR({unlevered_equity_irr_range})*12,0)"),
+         excel_irr_ladder_formula(unlevered_equity_irr_range)),
         ("Leverage Premium", metrics["Scenario A Leverage Premium"], calc_pct_fmt, "=$P$13-$P$14"),
     ], title_fmt, label_fmt)
 
@@ -2310,7 +2446,7 @@ def build_warehouse_excel_download(
                       "Scenario A Asset Side", section_fmt)
     merge_if_possible(ws, section_row, col_map[WAREHOUSE_COLUMNS[0]], col_map[WAREHOUSE_COLUMNS[-1]],
                       "Scenario A Liability - Warehouse Facility", section_fmt)
-    merge_if_possible(ws, section_row, col_map[WAREHOUSE_EQUITY_COLUMNS[0]], col_map[UNLEVERED_EQUITY_COLUMNS[-1]],
+    merge_if_possible(ws, section_row, col_map[SCENARIO_A_EQUITY_CASHFLOW_COLUMNS[0]], col_map[SCENARIO_A_EQUITY_CASHFLOW_COLUMNS[-1]],
                       "Scenario A Equity - Levered and Unlevered", section_fmt)
 
     for col_idx, col in enumerate(table.columns):
@@ -2337,10 +2473,6 @@ def build_warehouse_excel_download(
 
     for col_idx, col in enumerate(table.columns):
         ws.set_column(col_idx, col_idx, 16 if len(col) < 18 else 20)
-    ws.freeze_panes(data_start, 2)
-    write_warehouse_cashflow_helper(
-        cashflow_ws, table, col_map, data_start, xl_rowcol_to_cell, header_fmt, calc_fmt
-    )
     workbook.close()
     return output.getvalue()
 
@@ -2562,9 +2694,9 @@ def build_excel_download(
         ("First Trigger Period", metrics["First Trigger Period"], calc_fmt,
          f'=IFERROR(INDEX({table_refs["Period"]},MATCH("Yes",{table_refs["Trigger Breached"]},0)),0)'),
         ("Scenario A Equity IRR — Levered", metrics["Scenario A Equity IRR - Levered"], calc_pct_fmt,
-         f"=IFERROR(IRR({levered_equity_irr_range})*12,0)"),
+         excel_irr_ladder_formula(levered_equity_irr_range)),
         ("Scenario A Equity IRR — Unlevered", metrics["Scenario A Equity IRR - Unlevered"], calc_pct_fmt,
-         f"=IFERROR(IRR({unlevered_equity_irr_range})*12,0)"),
+         excel_irr_ladder_formula(unlevered_equity_irr_range)),
     ], title_fmt, label_fmt)
 
     ws.merge_range(
@@ -2630,7 +2762,6 @@ def build_excel_download(
             ws.set_column(col_idx, col_idx, 4)
         else:
             ws.set_column(col_idx, col_idx, 16 if len(col) < 18 else 20)
-    ws.freeze_panes(data_start, 2)
     write_cashflow_helper(
         cashflow_ws, columns, col_map, data_start, data_end, row + 2,
         xl_rowcol_to_cell, workbook, header_fmt, calc_fmt, input_refs
@@ -2687,6 +2818,17 @@ def write_box(ws, row: int, col: int, title: str, rows: list[tuple], title_fmt, 
             ws.write_formula(row + offset, col + 1, formula[0], value_fmt, value)
         else:
             ws.write(row + offset, col + 1, value, value_fmt)
+
+
+def excel_irr_ladder_formula(cashflow_expression: str, periods_per_year: int = 12) -> str:
+    return (
+        f"=LET(cf,{cashflow_expression},"
+        "r,IFERROR(IRR(cf,0.005),"
+        "IFERROR(IRR(cf,-0.005),"
+        "IFERROR(IRR(cf,0.05),"
+        "IFERROR(IRR(cf,-0.05),NA())))),"
+        f"r*{periods_per_year})"
+    )
 
 
 def write_alternative_scenario_headers(ws, row: int, col_map: dict[str, int], fmt, note_fmt) -> None:
@@ -2854,7 +2996,6 @@ def warehouse_waterfall_formula(
             f"=MAX({at('Collateral Beginning Balance')}-{at('Defaults')},0)"
         ),
         "Servicing Fee": f"={at('Remaining Performing Balance')}*{input_refs['servicing_fee']}/12",
-        "Admin Fee": f"={at('Remaining Performing Balance')}*{input_refs['admin_fee']}/12",
         "Scheduled Payment of Performing Collateral": (
             f"={at('Surviving Scheduled Payment')}*IFERROR("
             f"{at('Remaining Performing Balance')}/{at('Collateral Beginning Balance')},0)"
@@ -2911,26 +3052,8 @@ def warehouse_waterfall_formula(
         "Advance Rate to Purchase Price": (
             f"={at('Advance Rate to Par')}*{input_refs['deal_balance']}/{input_refs['purchase_price']}"
         ),
-        "Warehouse Equity Beginning Balance": (
-            f"=MAX({at('Collateral Beginning Balance')}-{at('Facility Beginning Balance')},0)"
-        ),
-        "Warehouse Equity Cashflow": f"={at('Asset Total Cashflow')}-{at('Facility Total Cashflow')}",
-        "Warehouse Equity Ending Balance": (
-            f"=MAX({at('Collateral Ending Balance')}-{at('Facility Ending Balance')},0)"
-        ),
-        "Warehouse Equity ROE": (
-            f"=IFERROR({at('Warehouse Equity Cashflow')}*12/"
-            f"{at('Warehouse Equity Beginning Balance')},0)"
-        ),
-        "Unlevered Equity Beginning Balance": f"={at('Collateral Beginning Balance')}",
-        "Unlevered Equity Cashflow": (
-            f"={at('Asset Total Cashflow')}-{at('Servicing Fee')}-{at('Admin Fee')}"
-        ),
-        "Unlevered Equity Ending Balance": f"={at('Collateral Ending Balance')}",
-        "Unlevered Equity ROE": (
-            f"=IFERROR({at('Unlevered Equity Cashflow')}*12/"
-            f"{at('Unlevered Equity Beginning Balance')},0)"
-        ),
+        "Scenario A Levered Equity Cashflow": f"={at('Asset Total Cashflow')}-{at('Facility Total Cashflow')}",
+        "Scenario A Unlevered Equity Cashflow": f"={at('Asset Total Cashflow')}-{at('Servicing Fee')}",
     }
     return formulas.get(col)
 
@@ -3006,6 +3129,8 @@ def rmbs_waterfall_formula(
         "Unlevered Equity Cashflow",
         "Unlevered Equity Ending Balance",
         "Unlevered Equity ROE",
+        "Scenario A Levered Equity Cashflow",
+        "Scenario A Unlevered Equity Cashflow",
         "Scenario B Debt Proceeds",
         "Warehouse Takeout Surplus / (Shortfall)",
         "Bond Ending Balance",

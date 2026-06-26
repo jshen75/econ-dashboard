@@ -1,12 +1,27 @@
 import unittest
-
 from rmbs.presale_parser import (
     build_inputs_from_confirmed,
     compute_ce_gap_sizes,
+    extraction_rows,
     extraction_summary,
+    nuance_rows,
+    numeric_value,
     validation_flags,
 )
 from rmbs.presale_store import json_safe
+from rmbs.calculator import RmbsInputs
+from rmbs.warehouse_app import (
+    advance_spread_equity_irr_table,
+    advance_spread_sensitivity_table,
+    cdr_severity_equity_irr_table,
+    cdr_severity_sensitivity_table,
+    field_review_display_df,
+    missing_sourced_rows,
+    nuance_review_display_df,
+    simple_range_note,
+    tranche_a1_pct,
+    tranche_stack_label,
+)
 
 
 class PresaleParserTest(unittest.TestCase):
@@ -57,6 +72,9 @@ class PresaleParserTest(unittest.TestCase):
             "severity_high_pct": 50.0,
             "foreclosure_freq_low_pct": 3.5,
             "foreclosure_freq_high_pct": 18.0,
+            "cumulative_loss_trigger_pct": 2.25,
+            "delinquency_trigger_pct": 4.50,
+            "servicing_fee_pct": 0.28,
         }
         assumptions = {
             "cpr_pct": 9.0,
@@ -86,7 +104,22 @@ class PresaleParserTest(unittest.TestCase):
         self.assertEqual(inputs.a2_pct, 15.0)
         self.assertEqual(inputs.b_foreclosure_frequency_pct, 3.5)
         self.assertEqual(inputs.aaa_foreclosure_frequency_pct, 18.0)
+        self.assertEqual(inputs.stepdown_cum_loss_trigger_pct, 2.25)
+        self.assertEqual(inputs.stepdown_dq_trigger_pct, 4.50)
+        self.assertEqual(inputs.servicing_fee_pct, 0.3)
+        self.assertEqual(inputs.admin_fee_pct, 0.0)
         self.assertAlmostEqual(100 - inputs.advance_rate_pct, 16.0)
+
+    def test_build_inputs_uses_sourced_servicing_when_assumption_missing(self):
+        inputs = build_inputs_from_confirmed(
+            {"collateral_notional": 100_000_000, "servicing_fee_pct": 0.42},
+            {"cpr_pct": 8.0, "cdr_pct": 1.0, "yield_target_pct": 7.0, "sofr_pct": 4.0,
+             "spread_pct": 2.0, "advance_rate_pct": 80.0},
+            [],
+        )
+
+        self.assertEqual(inputs.servicing_fee_pct, 0.42)
+        self.assertEqual(inputs.admin_fee_pct, 0.0)
 
     def test_parse_memory_json_sanitizer_handles_non_finite_metrics(self):
         safe = json_safe({"good": 1.5, "bad": float("inf"), "nested": [float("nan")]})
@@ -94,6 +127,98 @@ class PresaleParserTest(unittest.TestCase):
         self.assertEqual(safe["good"], 1.5)
         self.assertIsNone(safe["bad"])
         self.assertIsNone(safe["nested"][0])
+
+    def test_nan_confirmed_values_are_flagged_for_manual_input(self):
+        rows = [
+            {"field": "term_months", "label": "WA Original Term", "approved_value": float("nan")},
+            {"field": "wa_coupon_pct", "label": "WA Coupon", "approved_value": 12.45},
+            {"field": "severity_high_pct", "label": "Severity High", "approved_value": "nan"},
+        ]
+
+        self.assertIsNone(numeric_value(float("nan")))
+        self.assertIsNone(numeric_value("nan"))
+        self.assertEqual(
+            [row["field"] for row in missing_sourced_rows(rows)],
+            ["term_months", "severity_high_pct"],
+        )
+
+    def test_field_review_display_hides_internal_parser_columns(self):
+        display = field_review_display_df([
+            {
+                "field": "wa_coupon_pct",
+                "label": "WA Coupon",
+                "approved_value": 12.45,
+                "page": "PAGE 7",
+                "confidence": 0.95,
+                "anchor": "source text",
+            }
+        ])
+
+        self.assertEqual(list(display.columns), ["Label", "approved_value", "Page", "Verified"])
+        self.assertEqual(display.iloc[0]["Verified"], "✅")
+        self.assertEqual(display["approved_value"].dtype, object)
+        self.assertEqual(display.iloc[0]["approved_value"], "12.45")
+
+    def test_headline_review_excludes_nuanced_presale_fields(self):
+        parsed = {
+            "fields": {
+                "collateral_notional": {"value": 100_000_000, "page_hint": "PAGE 1", "source_anchor_text": "balance", "confidence": 1},
+                "severity_low_pct": {"value": 20, "page_hint": "PAGE 8", "source_anchor_text": "B severity", "confidence": 1},
+                "prepayment_high_pct": {"value": 25, "page_hint": "PAGE 9", "source_anchor_text": "AAA CPR", "confidence": 1},
+                "servicing_fee_pct": {"value": 0.25, "page_hint": "PAGE 10", "source_anchor_text": "servicing fee", "confidence": 1},
+            }
+        }
+
+        headline_fields = [row["field"] for row in extraction_rows(parsed)]
+        nuance_fields = [row["field"] for row in nuance_rows(parsed)]
+        nuance_display = nuance_review_display_df(parsed)
+
+        self.assertIn("collateral_notional", headline_fields)
+        self.assertNotIn("severity_low_pct", headline_fields)
+        self.assertNotIn("servicing_fee_pct", headline_fields)
+        self.assertIn("severity_low_pct", nuance_fields)
+        self.assertIn("prepayment_high_pct", nuance_fields)
+        self.assertIn("Servicing Fee", nuance_display["Label"].tolist())
+
+    def test_warehouse_app_sensitivity_tables_recompute_scenarios(self):
+        inputs = RmbsInputs()
+
+        cdr_table = cdr_severity_equity_irr_table(inputs)
+        advance_table = advance_spread_equity_irr_table(inputs)
+
+        self.assertEqual(cdr_table.shape, (10, 9))
+        self.assertEqual(advance_table.shape, (9, 7))
+        self.assertEqual(cdr_table.index[0], "CDR 0.25%")
+        self.assertIn("Sev 35%", cdr_table.columns)
+        self.assertIn("Spr 2%", advance_table.columns)
+        self.assertTrue(cdr_table.map(lambda value: isinstance(value, float)).all().all())
+        self.assertTrue(advance_table.map(lambda value: isinstance(value, float)).all().all())
+
+    def test_warehouse_app_sensitivity_tables_support_selectable_metrics(self):
+        inputs = RmbsInputs()
+
+        duration_table = cdr_severity_sensitivity_table(inputs, "Macaulay Duration")
+        facility_wal_table = advance_spread_sensitivity_table(inputs, "Facility WAL")
+        net_loss_table = cdr_severity_sensitivity_table(inputs, "Cumulative Net Loss")
+
+        self.assertEqual(duration_table.shape, (10, 9))
+        self.assertEqual(facility_wal_table.shape, (9, 7))
+        self.assertTrue((duration_table > 0).all().all())
+        self.assertTrue((facility_wal_table >= 0).all().all())
+        self.assertTrue((net_loss_table >= 0).all().all())
+
+    def test_tranche_stack_label_collapses_exchangeable_senior_variants(self):
+        self.assertEqual(tranche_stack_label({"class_name": "A-1A"}, 0), "A1")
+        self.assertEqual(tranche_stack_label({"class_name": "A-1B"}, 0), "A1")
+        self.assertEqual(tranche_stack_label({"class_name": "Class B"}, 1), "B")
+
+    def test_assumption_note_helpers_are_concise_and_a1_seeded(self):
+        self.assertEqual(simple_range_note("Presale range", 1, 25), "Presale range: 1%-25%")
+        self.assertEqual(simple_range_note("Presale range", None, None), "Presale range: n/a")
+        self.assertEqual(tranche_a1_pct([
+            {"class_name": "A-1A", "thickness_pct": 67.44},
+            {"class_name": "B", "thickness_pct": 24.36},
+        ]), 67.44)
 
 
 if __name__ == "__main__":

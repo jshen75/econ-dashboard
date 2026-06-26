@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
 from io import BytesIO
 from typing import Any
@@ -21,11 +22,21 @@ FIELD_LABELS = {
     "wa_fico": "WA FICO",
     "wa_cltv_pct": "WA CLTV",
     "wa_dscr": "WA DSCR",
+}
+
+NUANCE_FIELD_LABELS = {
     "severity_low_pct": "Severity Low",
     "severity_high_pct": "Severity High",
     "foreclosure_freq_low_pct": "Foreclosure Frequency Low",
     "foreclosure_freq_high_pct": "Foreclosure Frequency High",
+    "prepayment_low_pct": "Prepayment Low",
+    "prepayment_high_pct": "Prepayment High",
+    "cumulative_loss_trigger_pct": "Cumulative Loss Trigger",
+    "delinquency_trigger_pct": "Delinquency Trigger",
+    "servicing_fee_pct": "Servicing Fee",
 }
+
+ALL_FIELD_LABELS = {**FIELD_LABELS, **NUANCE_FIELD_LABELS}
 
 TRANCHE_SIZE_FIELDS = ["a1_pct", "a1f_pct", "a2_pct", "a3_pct", "m1_pct", "b1a_pct", "b1b_pct", "b2_pct", "b3_pct"]
 
@@ -33,8 +44,6 @@ ASSUMED_DEFAULTS = {
     "cpr_pct": RmbsInputs.cpr_pct,
     "cdr_pct": RmbsInputs.cdr_pct,
     "yield_target_pct": RmbsInputs.yield_target_pct,
-    "servicing_fee_pct": RmbsInputs.servicing_fee_pct,
-    "admin_fee_pct": RmbsInputs.admin_fee_pct,
     "sofr_pct": RmbsInputs.sofr_pct,
     "spread_pct": RmbsInputs.spread_pct,
     "advance_rate_pct": RmbsInputs.advance_rate_pct,
@@ -57,8 +66,11 @@ Rules:
 - collateral_notional comes from Closing pool balance or a collateral-summary paragraph. Convert million-dollar units to absolute dollars.
 - tranche sizing uses Credit enhancement (%) attachment points from the Preliminary Ratings table. Do not sum preliminary amount rows.
 - collapse exchangeable, notional, interest-only, first-cashflow, and last-cashflow variants into one representative per credit-enhancement level.
-- collateral stats and loss-estimation ranges come from the subject column only.
-- SOFR, financing spread, advance rate, CPR, CDR, yield target, fees, and tranche coupons are assumed and must not be sourced.
+- collateral stats, loss-estimation ranges, prepayment/prepay speed ranges, performance trigger levels, and servicing fee come from the subject column only when present.
+- prepayment_low_pct/prepayment_high_pct: scan ALL explicit prepayment/CPR/prepay speed assumptions in the presale, including rating stresses/tranche scenarios when shown. Return the absolute numeric low and absolute numeric high across the table, not only AAA or only the first row. Use anchors that identify the labels/rows used for the min and max. Return null only if no explicit prepayment number exists.
+- cumulative_loss_trigger_pct and delinquency_trigger_pct should come from trigger/performance-test sections. Return null if no explicit trigger exists.
+- servicing_fee_pct should come from servicing fee, master servicing fee, or aggregate servicing/admin/expense fee disclosure only when explicit. Return null if not present.
+- SOFR, financing spread, advance rate, CDR annual seed, yield target, admin fee, and tranche coupons are assumed and must not be sourced.
 
 Return only the requested structured object through the tool.
 """
@@ -83,7 +95,7 @@ PRESALE_EXTRACTION_SCHEMA: dict[str, Any] = {
         "fields": {
             "type": "object",
             "additionalProperties": False,
-            "required": list(FIELD_LABELS),
+            "required": list(ALL_FIELD_LABELS),
             "properties": {
                 field: {
                     "type": "object",
@@ -96,7 +108,7 @@ PRESALE_EXTRACTION_SCHEMA: dict[str, Any] = {
                         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                     },
                 }
-                for field in FIELD_LABELS
+                for field in ALL_FIELD_LABELS
             },
         },
         "tranche_attachments": {
@@ -203,9 +215,10 @@ def numeric_value(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     text = str(value).strip().replace("$", "").replace(",", "").replace("%", "")
-    if not text:
+    if not text or text.lower() in {"nan", "none", "null", "na", "n/a", "-"}:
         return None
     multiplier = 1.0
     lowered = text.lower()
@@ -216,7 +229,8 @@ def numeric_value(value: Any) -> float | None:
     for token in ["billion", "million", "bn", "mm", "mil"]:
         text = text.lower().replace(token, "")
     try:
-        return float(text.strip()) * multiplier
+        number = float(text.strip()) * multiplier
+        return number if math.isfinite(number) else None
     except ValueError:
         return None
 
@@ -266,11 +280,11 @@ def validation_flags(parsed: dict[str, Any], ce_sizes: list[dict[str, Any]]) -> 
 
     for field, data in fields.items():
         if data.get("value") is not None and not data.get("source_anchor_text"):
-            flags.append(f"{FIELD_LABELS.get(field, field)} has a sourced value but no anchor text.")
+            flags.append(f"{ALL_FIELD_LABELS.get(field, field)} has a sourced value but no anchor text.")
         if data.get("value") is None:
-            flags.append(f"{FIELD_LABELS.get(field, field)} is missing and needs review.")
+            flags.append(f"{ALL_FIELD_LABELS.get(field, field)} is missing and needs review.")
         if float(data.get("confidence") or 0) < 0.65:
-            flags.append(f"{FIELD_LABELS.get(field, field)} is low confidence.")
+            flags.append(f"{ALL_FIELD_LABELS.get(field, field)} is low confidence.")
     return flags
 
 
@@ -282,6 +296,21 @@ def extraction_rows(parsed: dict[str, Any]) -> list[dict[str, Any]]:
             "field": field,
             "label": label,
             "approved_value": data.get("value"),
+            "confidence": data.get("confidence", 0.0),
+            "page": data.get("page_hint"),
+            "anchor": data.get("source_anchor_text"),
+        })
+    return rows
+
+
+def nuance_rows(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for field, label in NUANCE_FIELD_LABELS.items():
+        data = extracted_field(parsed, field)
+        rows.append({
+            "field": field,
+            "label": label,
+            "value": data.get("value"),
             "confidence": data.get("confidence", 0.0),
             "page": data.get("page_hint"),
             "anchor": data.get("source_anchor_text"),
@@ -311,6 +340,11 @@ def build_inputs_from_confirmed(
         numeric_value(confirmed_values.get("severity_high_pct")),
         defaults.severity_pct,
     )
+    servicing_fee = (
+        float(assumptions.get("servicing_fee_pct"))
+        if "servicing_fee_pct" in assumptions
+        else numeric_value(confirmed_values.get("servicing_fee_pct")) or defaults.servicing_fee_pct
+    )
     tranche_values = {field: 0.0 for field in TRANCHE_SIZE_FIELDS}
     for field, size in zip(TRANCHE_SIZE_FIELDS, ce_sizes):
         tranche_values[field] = float(size.get("thickness_pct") or 0.0)
@@ -333,6 +367,16 @@ def build_inputs_from_confirmed(
             numeric_value(confirmed_values.get("foreclosure_freq_low_pct"))
             or defaults.b_foreclosure_frequency_pct
         ),
+        stepdown_cum_loss_trigger_pct=(
+            numeric_value(confirmed_values.get("cumulative_loss_trigger_pct"))
+            or defaults.stepdown_cum_loss_trigger_pct
+        ),
+        stepdown_dq_trigger_pct=(
+            numeric_value(confirmed_values.get("delinquency_trigger_pct"))
+            or defaults.stepdown_dq_trigger_pct
+        ),
+        servicing_fee_pct=servicing_fee,
+        admin_fee_pct=0.0,
         **{key: float(assumptions.get(key, default)) for key, default in ASSUMED_DEFAULTS.items()},
         **tranche_values,
     )

@@ -406,20 +406,19 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar — refresh + status
+# Navigation + sidebar status
 # ---------------------------------------------------------------------------
+
+PAGES = ["Macro Dashboard", "Mortgage Calculator", "RMBS", "Warehouse Facility", "Warehouse App"]
+page = st.pills("Page", PAGES, default="RMBS", key="page_nav", label_visibility="collapsed")
+if page is None:
+    page = "RMBS"
 
 with st.sidebar:
     st.title("Econ Dashboard")
     st.caption("All the numbers, plus some intuitions.")
-    page = st.radio(
-        "Page",
-        ["Macro Dashboard", "Mortgage Calculator", "RMBS", "Warehouse Facility", "Warehouse App"],
-        index=2,
-    )
 
     st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
-    st.caption(f"Storage: {store.backend_name()}")
 
     # Admin login (only shown when a password is configured, i.e. on a deploy).
     if admin_password():
