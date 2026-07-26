@@ -349,11 +349,15 @@ class PresaleParserTest(unittest.TestCase):
         self.assertEqual(simple_range_note("Presale range", None, None), "Presale range: n/a")
         ce_sizes = [
             {"class_name": "A-1A", "thickness_pct": 67.44},
-            {"class_name": "B", "thickness_pct": 24.36},
-            {"class_name": "Residual", "thickness_pct": 8.20},
+            {"class_name": "B", "thickness_pct": 10.00},
+            {"class_name": "C", "thickness_pct": 5.00},
+            {"class_name": "M-1", "thickness_pct": 7.00},
+            {"class_name": "A-1FCF", "thickness_pct": 2.00},
+            {"class_name": "XS", "thickness_pct": 1.00},
+            {"class_name": "Residual", "thickness_pct": 7.56},
         ]
-        self.assertEqual(debt_tranche_pct(ce_sizes), 91.8)
-        self.assertEqual(tranche_a1_pct(ce_sizes), 91.8)
+        self.assertEqual(debt_tranche_pct(ce_sizes), 82.44)
+        self.assertEqual(tranche_a1_pct(ce_sizes), 82.44)
 
 
 if __name__ == "__main__":

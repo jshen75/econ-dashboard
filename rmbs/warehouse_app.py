@@ -1211,11 +1211,7 @@ def simple_range_note(title: str, low: Any, high: Any) -> str:
 def debt_tranche_pct(ce_sizes: list[dict[str, Any]]) -> float:
     total = 0.0
     for idx, row in enumerate(ce_sizes):
-        label = tranche_stack_label(row, idx)
-        raw_name = str(row.get("class_name") or "").upper()
-        if label in {"XS", "R", "RESIDUAL", "EQUITY"}:
-            continue
-        if "RESIDUAL" in raw_name or "EQUITY" in raw_name or raw_name in {"XS", "R", "XSR", "XS/R"}:
+        if not is_plain_debt_tranche(row, idx):
             continue
         total += float(row.get("thickness_pct") or 0.0)
     return min(max(total, 0.0), 100.0)
@@ -1223,6 +1219,32 @@ def debt_tranche_pct(ce_sizes: list[dict[str, Any]]) -> float:
 
 def tranche_a1_pct(ce_sizes: list[dict[str, Any]]) -> float:
     return debt_tranche_pct(ce_sizes)
+
+
+def is_plain_debt_tranche(row: dict[str, Any] | pd.Series, idx: int) -> bool:
+    label = tranche_stack_label(row, idx)
+    raw_name = str(row.get("class_name") or "").upper()
+    compact = re.sub(r"[^A-Z0-9]", "", raw_name.replace("CLASS", ""))
+    label_compact = re.sub(r"[^A-Z0-9]", "", label.upper())
+    special_markers = {
+        "MEZZ",
+        "MEZZANINE",
+        "XS",
+        "XSR",
+        "RESIDUAL",
+        "EQUITY",
+        "IO",
+        "FCF",
+        "LCF",
+        "EXCHANGEABLE",
+    }
+    if any(marker in compact for marker in special_markers):
+        return False
+    if compact in {"R"} or label_compact in {"R"}:
+        return False
+    if compact.startswith("M") or label_compact.startswith("M"):
+        return False
+    return bool(re.fullmatch(r"[A-H][0-9]?[A-Z]?", label_compact))
 
 
 def render_confirmed_inputs(
