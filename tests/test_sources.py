@@ -4,12 +4,22 @@ import unittest
 from datetime import date
 from unittest.mock import patch
 
-from econ.indicators import by_key
+from econ.indicators import INDICATORS, by_key
 from econ.models import Indicator, Reading, SeriesSpec
 from econ.sources import _fred_series, parse_gdelt_timeline_readings, parse_warn_pa_readings
 
 
 class SourceParserTests(unittest.TestCase):
+    def test_production_registry_labels_warn_source_and_hides_ism(self) -> None:
+        keys = [ind.key for ind in INDICATORS]
+        warn = by_key("warn_notices")
+
+        self.assertNotIn("ism_pmi", keys)
+        assert warn is not None
+        self.assertIn("Pennsylvania", warn.name)
+        self.assertIn("Pennsylvania", warn.intuition)
+        self.assertIn("pa.gov", warn.source_url)
+
     def test_parse_warn_pa_readings_groups_by_month(self) -> None:
         ind = by_key("warn_notices")
         assert ind is not None

@@ -9,7 +9,6 @@ Run:  streamlit run app.py
 
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -20,8 +19,6 @@ import streamlit as st
 from econ import refresh, store
 from econ.indicators import INDICATORS, sections
 from econ.models import Indicator, Reading
-from mortgage.page import render_mortgage_page
-from rmbs.page import render_rmbs_page, render_warehouse_page
 from rmbs.warehouse_app import render_warehouse_app_page
 
 st.set_page_config(page_title="Econ Dashboard", page_icon="📊", layout="wide")
@@ -37,30 +34,6 @@ if store.get_meta("seeded_at") is None:
 
     store.upsert_readings(SEED)
     store.set_meta("seeded_at", date.today().isoformat())
-
-
-# ---------------------------------------------------------------------------
-# Admin gate — refresh + manual edits are admin-only when a password is set.
-# If no ADMIN_PASSWORD is configured (e.g. running locally), you have full
-# access. On a public deploy, set ADMIN_PASSWORD in Streamlit Cloud secrets so
-# visitors get a read-only dashboard.
-# ---------------------------------------------------------------------------
-
-
-def admin_password() -> str | None:
-    pw = os.environ.get("ECON_ADMIN_PASSWORD")
-    if pw:
-        return pw
-    try:
-        return st.secrets.get("ADMIN_PASSWORD")
-    except Exception:
-        return None
-
-
-def is_admin() -> bool:
-    if not admin_password():
-        return True  # no password configured -> trusted (local) session
-    return bool(st.session_state.get("is_admin", False))
 
 
 # ---------------------------------------------------------------------------
@@ -218,12 +191,12 @@ def render_explorer() -> None:
         xaxis_title="Date",
         yaxis_title="Index (100 = start)" if normalize else "Value",
         legend=dict(orientation="h", y=-0.25), hovermode="x unified")
-    st.plotly_chart(fig, width="stretch", key="explorer-chart")
+    st.plotly_chart(fig, use_container_width=True, key="explorer-chart")
 
     pivot = sub.pivot_table(index="period", columns="pick", values="value").sort_index()
     pivot.index = pivot.index.date
     with st.expander("Data table", expanded=False):
-        st.dataframe(pivot, width="stretch")
+        st.dataframe(pivot, use_container_width=True)
         st.download_button(
             "Download CSV (opens in Excel)", pivot.to_csv().encode(),
             "econ_explorer.csv", "text/csv")
@@ -313,7 +286,7 @@ def render_curve(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
                       yaxis_title="Yield (%)", xaxis_title="Maturity")
     cols = st.columns([2, 3])
     with cols[1]:
-        st.plotly_chart(fig, width="stretch", key=f"{ind.key}-curve")
+        st.plotly_chart(fig, use_container_width=True, key=f"{ind.key}-curve")
     with cols[0]:
         st.caption(f"As of {latest_period:%Y-%m-%d}")
         if show_tables:
@@ -321,7 +294,7 @@ def render_curve(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
                 st.dataframe(
                     points.reset_index().rename(
                         columns={"series": "Maturity", "value": "Yield %"}),
-                    hide_index=True, width="stretch")
+                    hide_index=True, use_container_width=True)
 
 
 def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> None:
@@ -347,15 +320,15 @@ def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> No
             tabs = st.tabs(["Combined"] + present)
             with tabs[0]:
                 st.plotly_chart(combined_fig(plot_df, present, unit_by_label),
-                                width="stretch", key=f"{ind.key}-combined")
+                                use_container_width=True, key=f"{ind.key}-combined")
             for tab, label in zip(tabs[1:], present):
                 with tab:
                     st.plotly_chart(
                         combined_fig(plot_df, [label], unit_by_label),
-                        width="stretch", key=f"{ind.key}-{label}")
+                        use_container_width=True, key=f"{ind.key}-{label}")
         else:
             st.plotly_chart(combined_fig(plot_df, present, unit_by_label),
-                            width="stretch", key=f"{ind.key}-single")
+                            use_container_width=True, key=f"{ind.key}-single")
 
     if show_tables:
         recent = df.sort_values("period", ascending=False).head(8)
@@ -364,7 +337,7 @@ def render_timeseries(ind: Indicator, df: pd.DataFrame, show_tables: bool) -> No
         show["period"] = show["period"].dt.date
         show = show.drop(columns="unit").rename(columns=str.title)
         with st.expander("Data table", expanded=False):
-            st.dataframe(show, hide_index=True, width="stretch")
+            st.dataframe(show, hide_index=True, use_container_width=True)
 
 
 def render_indicator(ind: Indicator, show_tables: bool) -> None:
@@ -378,18 +351,17 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 
     with st.expander(f"**{ind.name}**{headline_txt}", expanded=True):
         st.caption(f"_{ind.intuition}_")
-        if is_admin():
-            if st.button("Update this indicator", key=f"refresh-{ind.key}"):
-                run_refresh([ind], f"Updating {ind.name}...")
+        if st.button("Update this indicator", key=f"refresh-{ind.key}"):
+            run_refresh([ind], f"Updating {ind.name}...")
         if df.empty:
             st.info("No data yet. Use **Update this indicator**, refresh selected "
-                    "sources from the sidebar, or run `python seed.py`.")
+                    "sources from the dashboard controls, or run `python seed.py`.")
         elif ind.is_curve:
             render_curve(ind, df, show_tables)
         else:
             render_timeseries(ind, df, show_tables)
 
-        if ind.source_type in ("manual", "scrape") and is_admin():
+        if ind.source_type in ("manual", "scrape"):
             render_manual_form(ind)
 
         st.caption(
@@ -406,84 +378,59 @@ def render_indicator(ind: Indicator, show_tables: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Navigation + sidebar status
+# Navigation
 # ---------------------------------------------------------------------------
 
-PAGES = ["Macro Dashboard", "Mortgage Calculator", "RMBS", "Warehouse Facility", "Warehouse App"]
-page = st.pills("Page", PAGES, default="RMBS", key="page_nav", label_visibility="collapsed")
+PAGES = ["Econ Dashboard", "Risk Engine"]
+page = st.pills("Page", PAGES, default="Risk Engine", key="page_nav_v3", label_visibility="collapsed")
 if page is None:
-    page = "RMBS"
+    page = "Risk Engine"
 
-with st.sidebar:
-    st.title("Econ Dashboard")
-    st.caption("All the numbers, plus some intuitions.")
 
-    st.write("**Last refresh:**", store.get_meta("last_refresh") or "never")
+def render_dashboard_refresh_controls() -> None:
+    st.markdown("**Refresh Controls**")
+    st.caption(f"Last refresh: {store.get_meta('last_refresh') or 'never'}")
 
-    # Admin login (only shown when a password is configured, i.e. on a deploy).
-    if admin_password():
-        if st.session_state.get("is_admin"):
-            st.success("Admin mode")
-            if st.button("Log out", width="stretch"):
-                st.session_state.is_admin = False
-                st.rerun()
-        else:
-            with st.expander("Admin login"):
-                entered = st.text_input("Password", type="password",
-                                        key="admin_pw")
-                if st.button("Unlock", width="stretch"):
-                    if entered == admin_password():
-                        st.session_state.is_admin = True
-                        st.rerun()
-                    else:
-                        st.error("Wrong password.")
-
-    if page == "Macro Dashboard" and is_admin():
-        labels_by_key = {ind.key: indicator_label(ind) for ind in INDICATORS}
-        selected_keys = st.multiselect(
-            "Refresh selected",
-            options=[ind.key for ind in INDICATORS],
-            default=["jobless_claims", "warn_notices"],
-            format_func=lambda key: labels_by_key[key],
-            help="Use this when one scrape/news source is slow and you only want a few updates.",
-        )
-        c1, c2 = st.columns(2)
-        if c1.button("Refresh all", width="stretch", type="primary"):
-            run_refresh(INDICATORS, "Fetching latest releases...")
-        if c2.button("Selected", width="stretch"):
-            chosen = [ind for ind in INDICATORS if ind.key in selected_keys]
-            run_refresh(chosen, "Refreshing selected indicators...")
-        if st.session_state.get("last_refresh_summary"):
-            summarize_refresh(st.session_state.last_refresh_summary)
-    elif page == "Macro Dashboard":
-        st.caption("Read-only view. Log in as admin to refresh or edit.")
-
-    if page == "Macro Dashboard":
-        chosen_sections = st.multiselect("Sections", sections(), default=sections(),
-                                         help="Filter which sections show below.")
+    labels_by_key = {ind.key: indicator_label(ind) for ind in INDICATORS}
+    selected_keys = st.multiselect(
+        "Refresh selected",
+        options=[ind.key for ind in INDICATORS],
+        default=["jobless_claims", "warn_notices"],
+        format_func=lambda key: labels_by_key[key],
+        help="Use this when one scrape/news source is slow and you only want a few updates.",
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("Refresh all", use_container_width=True, type="primary"):
+        run_refresh(INDICATORS, "Fetching latest releases...")
+    if c2.button("Selected", use_container_width=True):
+        chosen = [ind for ind in INDICATORS if ind.key in selected_keys]
+        run_refresh(chosen, "Refreshing selected indicators...")
+    if st.session_state.get("last_refresh_summary"):
+        summarize_refresh(st.session_state.last_refresh_summary)
 
 
 # ---------------------------------------------------------------------------
 # Main page
 # ---------------------------------------------------------------------------
 
-if page == "Mortgage Calculator":
-    render_mortgage_page()
-elif page == "RMBS":
-    render_rmbs_page()
-elif page == "Warehouse Facility":
-    render_warehouse_page()
-elif page == "Warehouse App":
+if page == "Risk Engine":
     render_warehouse_app_page()
 else:
-    st.title("US Macro Dashboard")
+    st.title("Econ Dashboard")
     st.caption(f"Rendered {ny_now():%Y-%m-%d %H:%M %Z} · "
                f"{len(INDICATORS)} indicators across {len(sections())} sections")
 
-    # Master controls (top of page)
+    render_dashboard_refresh_controls()
+
     ctrl1, ctrl2 = st.columns([1, 3])
     show_tables = ctrl1.toggle("Show table panels", value=True,
                                help="Show closed data-table panels under charts.")
+    chosen_sections = ctrl2.multiselect(
+        "Sections",
+        sections(),
+        default=sections(),
+        help="Filter which sections show below.",
+    )
 
     with st.expander("Data Explorer — overlay & download any series", expanded=False):
         render_explorer()

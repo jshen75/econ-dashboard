@@ -235,7 +235,7 @@ def render_rmbs_page() -> None:
             data=build_excel_download(inputs, schedule, tranche_summary, metrics),
             file_name="rmbs_scenario.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
+            use_container_width=True,
         )
 
     render_summary_blocks(inputs, metrics)
@@ -262,7 +262,7 @@ def render_warehouse_page() -> None:
             data=build_warehouse_excel_download(inputs, schedule, metrics),
             file_name="warehouse_facility_scenario_a.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
+            use_container_width=True,
         )
 
     render_warehouse_metric_blocks(inputs, metrics)
@@ -551,10 +551,6 @@ def render_warehouse_metric_blocks(inputs: RmbsInputs, metrics: dict[str, float]
 
 def render_warehouse_tables(schedule: pd.DataFrame) -> None:
     st.markdown("**Excel View - Scenario A Warehouse Facility**")
-    st.caption(
-        "White columns are ideal scheduled collateral; blue columns are credit-adjusted collateral; "
-        "green columns are the facility lender; red columns are sponsor equity."
-    )
     table = warehouse_table(schedule)
     st.markdown(render_waterfall_html(table), unsafe_allow_html=True)
 
@@ -563,6 +559,12 @@ def warehouse_table(schedule: pd.DataFrame) -> pd.DataFrame:
     table = schedule.copy()
     table["Scenario A Levered Equity Cashflow"] = table["Warehouse Equity Cashflow"]
     table["Scenario A Unlevered Equity Cashflow"] = table["Unlevered Equity Cashflow"]
+    period_zero = table["Period"] == 0
+    if period_zero.any():
+        deal_balance = float(table.loc[period_zero, "Collateral Ending Balance"].iloc[0])
+        initial_facility = float(table.loc[period_zero, "Facility Ending Balance"].iloc[0])
+        table.loc[period_zero, "Scenario A Levered Equity Cashflow"] = initial_facility - deal_balance
+        table.loc[period_zero, "Scenario A Unlevered Equity Cashflow"] = -deal_balance
     return table[[col for col in SCENARIO_A_COLUMNS if col in table.columns]].copy()
 
 
@@ -570,21 +572,21 @@ def render_charts(schedule: pd.DataFrame, tranche_summary: pd.DataFrame) -> None
     st.markdown("**RMBS Waterfall Analysis**")
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(balance_figure(schedule), width="stretch", key="rmbs-balances")
+        st.plotly_chart(balance_figure(schedule), use_container_width=True, key="rmbs-balances")
     with c2:
-        st.plotly_chart(tranche_cashflow_figure(tranche_summary), width="stretch", key="rmbs-tranche-cashflows")
+        st.plotly_chart(tranche_cashflow_figure(tranche_summary), use_container_width=True, key="rmbs-tranche-cashflows")
     c3, c4 = st.columns(2)
     with c3:
-        st.plotly_chart(credit_figure(schedule), width="stretch", key="rmbs-credit")
+        st.plotly_chart(credit_figure(schedule), use_container_width=True, key="rmbs-credit")
     with c4:
-        st.plotly_chart(excess_spread_figure(schedule), width="stretch", key="rmbs-excess-spread")
+        st.plotly_chart(excess_spread_figure(schedule), use_container_width=True, key="rmbs-excess-spread")
 
 
 def render_tables(schedule: pd.DataFrame, tranche_summary: pd.DataFrame) -> None:
     st.markdown("**Tranche Summary**")
     st.dataframe(
         format_table(tranche_summary),
-        width="stretch",
+        use_container_width=True,
         hide_index=True,
     )
     st.markdown("**Excel View - RMBS Waterfall**")
@@ -605,9 +607,9 @@ def render_sensitivity_analysis(inputs: RmbsInputs) -> None:
     attachment_df = attachment_sensitivity(inputs)
     c1, c2 = st.columns(2)
     with c1:
-        st.plotly_chart(cdr_sensitivity_figure(cdr_df), width="stretch", key="rmbs-cdr-sensitivity")
+        st.plotly_chart(cdr_sensitivity_figure(cdr_df), use_container_width=True, key="rmbs-cdr-sensitivity")
     with c2:
-        st.plotly_chart(attachment_sensitivity_figure(attachment_df), width="stretch", key="rmbs-attachment")
+        st.plotly_chart(attachment_sensitivity_figure(attachment_df), use_container_width=True, key="rmbs-attachment")
 
 
 PRESALE_LOSS_BENCHMARKS = {
@@ -910,9 +912,9 @@ def render_warehouse_view(
     benchmarks: dict[str, float] | None = None,
 ) -> None:
     schedule: pd.DataFrame = results["schedule"]
-    st.plotly_chart(facility_cashflow_stack_figure(schedule), width="stretch",
+    st.plotly_chart(facility_cashflow_stack_figure(schedule), use_container_width=True,
                     key=f"{key_prefix}-facility-cf-stack")
-    st.plotly_chart(facility_cushion_figure(schedule), width="stretch",
+    st.plotly_chart(facility_cushion_figure(schedule), use_container_width=True,
                     key=f"{key_prefix}-facility-cushion")
 
 
@@ -961,17 +963,17 @@ def render_equity_view(
     tab1, tab2, tab3 = st.tabs(["IRR vs Advance", "Annual Cashflow", "Tranche Loss"])
     with tab1:
         chart_heading("Leverage Curve", *CHART_HELP["Leverage Curve"])
-        st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima), width="stretch", key="rmbs-leverage-curve")
+        st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima), use_container_width=True, key="rmbs-leverage-curve")
     with tab2:
         chart_heading(
             "Annual Equity Distributions",
             "annual_equity_distribution = SUM(monthly_equity_cashflow by year)",
             "How much cash equity receives by year, levered versus unlevered.",
         )
-        st.plotly_chart(annual_equity_distribution_figure(schedule), width="stretch",
+        st.plotly_chart(annual_equity_distribution_figure(schedule), use_container_width=True,
                         key="rmbs-annual-equity-bars")
     with tab3:
-        st.plotly_chart(tranche_writedown_ladder_figure(tranche_summary), width="stretch",
+        st.plotly_chart(tranche_writedown_ladder_figure(tranche_summary), use_container_width=True,
                         key="rmbs-writedown-ladder")
 
 
@@ -979,16 +981,16 @@ def render_stress_test_view(inputs: RmbsInputs) -> None:
     st.markdown("**View 3 - Stress Tests**")
     h1, h2 = st.columns(2)
     with h1:
-        st.plotly_chart(equity_irr_heatmap_figure(inputs), width="stretch", key="rmbs-equity-heatmap")
+        st.plotly_chart(equity_irr_heatmap_figure(inputs), use_container_width=True, key="rmbs-equity-heatmap")
     with h2:
-        st.plotly_chart(advance_spread_heatmap_figure(inputs), width="stretch", key="rmbs-adv-spread-heatmap")
+        st.plotly_chart(advance_spread_heatmap_figure(inputs), use_container_width=True, key="rmbs-adv-spread-heatmap")
     h3, h4 = st.columns(2)
     with h3:
-        st.plotly_chart(tornado_figure(inputs), width="stretch", key="rmbs-tornado")
+        st.plotly_chart(tornado_figure(inputs), use_container_width=True, key="rmbs-tornado")
     with h4:
-        st.plotly_chart(named_scenario_loss_figure(inputs), width="stretch", key="rmbs-scenario-loss")
+        st.plotly_chart(named_scenario_loss_figure(inputs), use_container_width=True, key="rmbs-scenario-loss")
     summary = named_scenario_summary(inputs)
-    st.dataframe(format_table(summary), width="stretch", hide_index=True)
+    st.dataframe(format_table(summary), use_container_width=True, hide_index=True)
 
 
 def render_assumptions_sources_panel() -> None:
@@ -1132,18 +1134,18 @@ def render_scenario_a_visual_grid(
     schedule: pd.DataFrame = results["schedule"]
     top_left, top_right = st.columns(2)
     with top_left:
-        st.plotly_chart(facility_cashflow_stack_figure(schedule), width="stretch",
+        st.plotly_chart(facility_cashflow_stack_figure(schedule), use_container_width=True,
                         key=f"{key_prefix}-facility-cf-stack")
     with top_right:
-        st.plotly_chart(facility_cushion_figure(schedule), width="stretch",
+        st.plotly_chart(facility_cushion_figure(schedule), use_container_width=True,
                         key=f"{key_prefix}-facility-cushion")
 
     bottom_left, bottom_right = st.columns(2)
     with bottom_left:
-        st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima, show_optima=False), width="stretch",
+        st.plotly_chart(leverage_curve_figure(inputs, advance_df, optima, show_optima=False), use_container_width=True,
                         key=f"{key_prefix}-leverage-curve")
     with bottom_right:
-        st.plotly_chart(annual_equity_distribution_figure(schedule), width="stretch",
+        st.plotly_chart(annual_equity_distribution_figure(schedule), use_container_width=True,
                         key=f"{key_prefix}-annual-equity-bars")
 
 
@@ -1155,18 +1157,18 @@ def render_warehouse_stress_view(
     st.markdown("**Stress Readout**")
     h1, h2 = st.columns(2)
     with h1:
-        st.plotly_chart(equity_irr_heatmap_figure(inputs), width="stretch", key=f"{key_prefix}-equity-heatmap")
+        st.plotly_chart(equity_irr_heatmap_figure(inputs), use_container_width=True, key=f"{key_prefix}-equity-heatmap")
     with h2:
-        st.plotly_chart(advance_spread_heatmap_figure(inputs), width="stretch",
+        st.plotly_chart(advance_spread_heatmap_figure(inputs), use_container_width=True,
                         key=f"{key_prefix}-adv-spread-heatmap")
     h3, h4 = st.columns(2)
     with h3:
-        st.plotly_chart(tornado_figure(inputs), width="stretch", key=f"{key_prefix}-tornado")
+        st.plotly_chart(tornado_figure(inputs), use_container_width=True, key=f"{key_prefix}-tornado")
     with h4:
-        st.plotly_chart(named_warehouse_scenario_loss_figure(inputs, benchmarks), width="stretch",
+        st.plotly_chart(named_warehouse_scenario_loss_figure(inputs, benchmarks), use_container_width=True,
                         key=f"{key_prefix}-scenario-loss")
     summary = named_warehouse_scenario_summary(inputs)
-    st.dataframe(format_table(summary), width="stretch", hide_index=True)
+    st.dataframe(format_table(summary), use_container_width=True, hide_index=True)
 
 
 def named_warehouse_scenario_loss_figure(
@@ -1277,7 +1279,7 @@ def render_optimal_advance_section(
             label for label, value in optima.items() if abs(value / 100 - advance) < 1e-9
         )
     )
-    st.dataframe(format_table(display), width="stretch", hide_index=True)
+    st.dataframe(format_table(display), use_container_width=True, hide_index=True)
 
 
 def equity_irr_zero_point_text(advance_df: pd.DataFrame) -> str:
@@ -2345,11 +2347,11 @@ def build_warehouse_excel_download(
                                        "valign": "vcenter", "bg_color": "#f3f4f6"})
 
     table = warehouse_table(schedule)
-    table = table[table["Period"] > 0].copy()
     section_row = 23
     header_row = 24
     data_start = 25
     data_end = data_start + len(table) - 1
+    projection_count = int((table["Period"] > 0).sum())
     col_map = {col: idx for idx, col in enumerate(table.columns)}
     table_refs = {
         col: f"{xl_rowcol_to_cell(data_start, idx)}:{xl_rowcol_to_cell(data_end, idx)}"
@@ -2376,10 +2378,12 @@ def build_warehouse_excel_download(
         "purchase_price": "$P$4",
     }
     levered_equity_irr_range = (
-        f"VSTACK(-($B$3-$I$7),{table_refs['Scenario A Levered Equity Cashflow']})"
+        f"{xl_rowcol_to_cell(data_start, col_map['Scenario A Levered Equity Cashflow'], row_abs=True, col_abs=True)}:"
+        f"{xl_rowcol_to_cell(data_end, col_map['Scenario A Levered Equity Cashflow'], row_abs=True, col_abs=True)}"
     )
     unlevered_equity_irr_range = (
-        f"VSTACK(-$B$3,{table_refs['Scenario A Unlevered Equity Cashflow']})"
+        f"{xl_rowcol_to_cell(data_start, col_map['Scenario A Unlevered Equity Cashflow'], row_abs=True, col_abs=True)}:"
+        f"{xl_rowcol_to_cell(data_end, col_map['Scenario A Unlevered Equity Cashflow'], row_abs=True, col_abs=True)}"
     )
 
     write_box(ws, 0, 0, "Collateral / Credit Inputs", [
@@ -2778,37 +2782,6 @@ def build_excel_download(
     return output.getvalue()
 
 
-def write_warehouse_cashflow_helper(
-    cashflow_ws,
-    table: pd.DataFrame,
-    col_map: dict[str, int],
-    data_start: int,
-    cell,
-    header_fmt,
-    calc_fmt,
-) -> None:
-    cashflow_ws.write(0, 0, "Scenario A Levered Equity Cashflow", header_fmt)
-    cashflow_ws.write(0, 1, "Scenario A Unlevered Equity Cashflow", header_fmt)
-    cashflow_ws.write_formula(1, 0, "=-('Scenario A Warehouse'!$B$3-'Scenario A Warehouse'!$I$7)", calc_fmt)
-    cashflow_ws.write_formula(1, 1, "=-'Scenario A Warehouse'!$B$3", calc_fmt)
-    for row_offset in range(len(table)):
-        source_row = data_start + row_offset
-        helper_row = row_offset + 2
-        cashflow_ws.write_formula(
-            helper_row,
-            0,
-            f"='Scenario A Warehouse'!{cell(source_row, col_map['Warehouse Equity Cashflow'])}",
-            calc_fmt,
-        )
-        cashflow_ws.write_formula(
-            helper_row,
-            1,
-            f"='Scenario A Warehouse'!{cell(source_row, col_map['Unlevered Equity Cashflow'])}",
-            calc_fmt,
-        )
-    cashflow_ws.set_column(0, 1, 26)
-
-
 def write_box(ws, row: int, col: int, title: str, rows: list[tuple], title_fmt, label_fmt) -> None:
     ws.write(row, col, title, title_fmt)
     for offset, row_data in enumerate(rows, start=2):
@@ -2822,12 +2795,14 @@ def write_box(ws, row: int, col: int, title: str, rows: list[tuple], title_fmt, 
 
 def excel_irr_ladder_formula(cashflow_expression: str, periods_per_year: int = 12) -> str:
     return (
-        f"=LET(cf,{cashflow_expression},"
+        f'=LET(cf,{cashflow_expression},dist,SUMIF(cf,">0"),'
         "r,IFERROR(IRR(cf,0.005),"
         "IFERROR(IRR(cf,-0.005),"
-        "IFERROR(IRR(cf,0.05),"
-        "IFERROR(IRR(cf,-0.05),NA())))),"
-        f"r*{periods_per_year})"
+        "IFERROR(IRR(cf,-0.02),"
+        "IFERROR(IRR(cf,-0.05),"
+        "IFERROR(IRR(cf,-0.1),"
+        "IFERROR(IRR(cf,-0.2),NA())))))),"
+        f"IF(dist<=0,-1,IF(ISNA(r),-1,r*{periods_per_year})))"
     )
 
 
@@ -2948,13 +2923,63 @@ def warehouse_waterfall_formula(
     def prev(name: str) -> str:
         return cell(row_idx - 1, col_map[name])
 
-    first_projection_row = row_idx == data_start
+    first_projection_row = row_idx in {data_start, data_start + 1}
+    seed_from_inputs = row_idx == data_start
+    if seed_from_inputs:
+        zero_cols = {
+            "Years",
+            "Scheduled Collateral Beginning Balance",
+            "Scheduled Payment",
+            "Scheduled Interest",
+            "Scheduled Principal",
+            "Collateral Beginning Balance",
+            "Survival Factor",
+            "Surviving Scheduled Payment",
+            "Surviving Scheduled Principal",
+            "Collateral Interest",
+            "Servicing Fee",
+            "Prepayments",
+            "Defaults",
+            "Recoveries",
+            "Net Loss",
+            "Cumulative Defaults %",
+            "Cumulative Net Loss %",
+            "Remaining Performing Balance",
+            "Scheduled Payment of Performing Collateral",
+            "Scheduled Principal of Performing Collateral",
+            "Principal Collections",
+            "Asset Total Cashflow",
+            "Cashflow Present Value",
+            "Balance Decline %",
+            "Facility Beginning Balance",
+            "Facility Interest Owed",
+            "Facility Interest Paid",
+            "Facility Interest Shortfall",
+            "Facility Principal Paid",
+            "Facility Total Cashflow",
+            "Facility Balance Decline %",
+        }
+        seed_formulas = {
+            "Period": "=0",
+            "Scheduled Collateral Ending Balance": f"={input_refs['deal_balance']}",
+            "Collateral Ending Balance": f"={input_refs['deal_balance']}",
+            "Facility Ending Balance": f"={input_refs['initial_facility']}",
+            "Advance Rate to Par": f"=IFERROR({at('Facility Ending Balance')}/{at('Collateral Ending Balance')},0)",
+            "Advance Rate to Purchase Price": (
+                f"={at('Advance Rate to Par')}*{input_refs['deal_balance']}/{input_refs['purchase_price']}"
+            ),
+            "Scenario A Levered Equity Cashflow": f"={input_refs['initial_facility']}-{input_refs['deal_balance']}",
+            "Scenario A Unlevered Equity Cashflow": f"=-{input_refs['deal_balance']}",
+        }
+        if col in zero_cols:
+            return "=0"
+        return seed_formulas.get(col)
+
     formulas = {
-        "Period": "=1" if first_projection_row else f"={prev('Period')}+1",
+        "Period": f"={prev('Period')}+1",
         "Years": f"={at('Period')}/12",
         "Scheduled Collateral Beginning Balance": (
-            f"={input_refs['deal_balance']}"
-            if first_projection_row else f"={prev('Scheduled Collateral Ending Balance')}"
+            f"={prev('Scheduled Collateral Ending Balance')}"
         ),
         "Scheduled Payment": (
             f"=PMT({input_refs['gross_coupon']}/12,{input_refs['term_months']},"
@@ -2971,7 +2996,7 @@ def warehouse_waterfall_formula(
             f"=MAX({at('Scheduled Collateral Beginning Balance')}-{at('Scheduled Principal')},0)"
         ),
         "Collateral Beginning Balance": (
-            f"={input_refs['deal_balance']}" if first_projection_row else f"={prev('Collateral Ending Balance')}"
+            f"={prev('Collateral Ending Balance')}"
         ),
         "Survival Factor": (
             f"=IFERROR({at('Collateral Beginning Balance')}/"
@@ -3025,7 +3050,7 @@ def warehouse_waterfall_formula(
             f"{input_refs['deal_balance']}"
         ),
         "Facility Beginning Balance": (
-            f"={input_refs['initial_facility']}" if first_projection_row else f"={prev('Facility Ending Balance')}"
+            f"={prev('Facility Ending Balance')}"
         ),
         "Facility Interest Owed": (
             f"={at('Facility Beginning Balance')}*{input_refs['facility_rate']}/12"
@@ -3529,6 +3554,14 @@ def number_text(value: float, decimals: int = 0) -> str:
 
 
 def pct_text(value: float) -> str:
+    if value is None:
+        return "n/m"
+    try:
+        value = float(value)
+        if not math.isfinite(value):
+            return "n/m"
+    except (TypeError, ValueError):
+        return "n/m"
     return f"{value:.2%}"
 
 

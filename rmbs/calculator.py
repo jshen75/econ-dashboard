@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -560,8 +561,10 @@ def safe_div(numerator: float, denominator: float) -> float:
 
 
 def stable_monthly_irr(cashflows: list[float]) -> float:
-    if not cashflows or not any(cf < 0 for cf in cashflows) or not any(cf > 0 for cf in cashflows):
+    if not cashflows or not any(cf < 0 for cf in cashflows):
         return 0.0
+    if not any(cf > 0 for cf in cashflows):
+        return -1.0 / 12
 
     def npv(discount_rate: float) -> float:
         base = 1 + discount_rate
@@ -573,20 +576,35 @@ def stable_monthly_irr(cashflows: list[float]) -> float:
                 continue
             try:
                 total += cf / (base ** idx)
-            except OverflowError:
+            except (OverflowError, ZeroDivisionError):
                 continue
         return total
 
-    low = -0.50
-    high = 1.0
-    low_npv = npv(low)
-    high_npv = npv(high)
-    while low_npv * high_npv > 0 and high < 10:
-        high *= 2
-        high_npv = npv(high)
-    if low_npv * high_npv > 0:
-        return 0.0
+    roots: list[tuple[float, float]] = []
+    search_points = [-0.999, -0.95, -0.90, -0.80, -0.70, -0.60, -0.50]
+    search_points += [idx / 100 for idx in range(-40, 101)]
+    search_points += [1.25, 1.50, 2.0, 3.0, 5.0, 10.0]
+    previous_rate = search_points[0]
+    previous_npv = npv(previous_rate)
 
+    for current_rate in search_points[1:]:
+        current_npv = npv(current_rate)
+        if not all(math.isfinite(value) for value in (previous_npv, current_npv)):
+            previous_rate = current_rate
+            previous_npv = current_npv
+            continue
+        if previous_npv == 0:
+            roots.append((previous_rate, previous_rate))
+        elif previous_npv * current_npv <= 0:
+            roots.append((previous_rate, current_rate))
+        previous_rate = current_rate
+        previous_npv = current_npv
+
+    if not roots:
+        return -1.0 / 12
+
+    low, high = min(roots, key=lambda pair: abs((pair[0] + pair[1]) / 2 - 0.005))
+    low_npv = npv(low)
     for _ in range(100):
         mid = (low + high) / 2
         mid_npv = npv(mid)

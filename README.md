@@ -1,128 +1,157 @@
-# 📊 Econ Dashboard
+# Econ Dashboard + Risk Engine
 
-A personal, self-hosted US-macro dashboard — *all the numbers, plus some
-intuitions*. A much simpler, single-user Trading-Economics for the handful of
-indicators worth tracking, built from the original project brief (kept locally
-in `notes/`).
+A Streamlit app with two public-facing pages:
 
-## What it does
+- **Econ Dashboard**: a compact US macro dashboard with live refresh controls.
+- **Risk Engine**: a structured-finance presale parser and warehouse facility model.
 
-- 15 indicators across 5 sections (Demand → GDP, Income/Labor, Production,
-  Inflation, Rates).
-- For each: the latest number(s), recent history chart, a short "what this means"
-  intuition, and the source link.
-- A mortgage calculator page for editable CPR/CDR/severity stress tests, projected
-  cash flows, and grouped charts.
-- A **Refresh now** button pulls the latest releases. Government revisions are
-  tracked (shows *"revised from X to Y"*), never silently overwritten.
-- Refresh can run all indicators, a selected subset, or a single indicator from
-  its own chart section. This is useful when scrape/news sources are slow or
-  rate-limited.
+The app is designed for local use and Streamlit Community Cloud deployment. It uses
+SQLite locally by default and can use Neon/Postgres in production when a database
+URL is provided through Streamlit secrets.
+
+## Current App Surface
+
+### Econ Dashboard
+
+The dashboard tracks a focused set of macro indicators across:
+
+- Demand to GDP
+- Income / labor
+- Production
+- Inflation
+- Rates
+
+Features:
+
+- Overlay and download any visible time series in the Data Explorer.
+- Refresh all sources, refresh selected sources, or refresh one chart at a time.
+- Track data revisions instead of silently overwriting prior releases.
+- Add manual fallback readings for scraped sources when a public page is slow or
+  changes layout.
+
+Current source mix:
+
+- **FRED** for stable quantitative data such as GDP, retail sales, payrolls,
+  claims, CPI, PCE prices, and Treasury yields.
+- **Pennsylvania WARN notices** from the Pennsylvania Department of Labor &
+  Industry WARN notices page. The WARN adapter is explicitly Pennsylvania-only
+  today because WARN disclosures are state-fragmented.
+- **GDELT news aggregation** for selected news-pressure series.
+
+ISM PMI and the older tariffs/geopolitics section are not currently exposed in
+the production dashboard.
+
+### Risk Engine
+
+Risk Engine parses public structured-finance presales and turns the extracted
+deal data into a warehouse facility model.
+
+Workflow:
+
+1. Upload a presale PDF.
+2. Parse with Claude Sonnet 4.6 using `ANTHROPIC_API_KEY`.
+3. Review extracted fields, parser flags, and dynamic headline metrics.
+4. Adjust model assumptions such as CPR, CDR, severity, SOFR, spread, servicing
+   fee, yield target, and advance rate.
+5. Review the analysis layer, sensitivity tables, cashflow visuals, and Excel
+   workbook preview.
+6. Download the formula-linked Scenario A warehouse workbook.
+
+Parser behavior:
+
+- The parser discovers the subject deal from the document.
+- It uses subject-deal table columns rather than benchmark/comparison columns.
+- Tranche sizing uses credit-enhancement attachment gaps rather than summing
+  exchangeable certificate amounts.
+- Advance rate is seeded from the total modeled debt tranche thickness, excluding
+  residual/equity/XS/R-style rows.
+- Deal-specific headline metrics are dynamic. RMBS metrics such as FICO, CLTV,
+  and DSCR can appear when present, but non-RMBS/ABS metrics such as YSOA, WA
+  APR, WA LTV, remaining term, seasoning, product mix, or obligor concentration
+  can also be surfaced.
+
+If parser credits are exhausted, the app displays:
+
+```text
+Presale parsing failed: not enough parser credits. Please reach out to admin for more credits.
+```
 
 ## Architecture
 
-Clean `fetch → parse/normalize → store → display`. Add an indicator by adding a
-row to [econ/indicators.py](econ/indicators.py) — no new code.
+Clean `fetch -> parse/normalize -> store -> display` for the macro dashboard,
+and `PDF text -> LLM extraction -> deterministic model -> workbook/report` for
+Risk Engine.
 
 | Layer | File | Job |
 |---|---|---|
-| Config | `econ/indicators.py` | The indicator registry (DRY, config-driven) |
-| Models | `econ/models.py` | `Indicator` / `SeriesSpec` / `Reading` shapes |
-| Fetch | `econ/fetch.py` | Polite, retrying HTTP (per-host rate limit, backoff, block detection) |
-| Sources | `econ/sources.py` | FRED API · scrapes · news aggregation · manual — behind one `collect()` |
-| Store | `econ/store.py` | SQLite locally, Postgres/Neon on deploy + revision tracking |
-| Orchestration | `econ/refresh.py` | `fetch → normalize → store` for all indicators |
-| Display | `app.py` | Streamlit UI |
-
-### Data sourcing (the hybrid)
-
-- **FRED API** for quantitative series — one clean interface, server-side
-  MoM/YoY transforms, rock-solid uptime. *(This is why the dashboard is reliable
-  instead of scraping a dozen .gov pages that change layout.)*
-- **Jobless claims** use FRED's seasonally adjusted initial and continuing claims
-  series, scaled to thousands for display.
-- **ISM PMI** is licensed and not on FRED — best-effort scraper with a seeded
-  fallback.
-- **WARN notices** are state-fragmented. The first adapter scrapes Pennsylvania's
-  public WARN notice page into monthly affected-worker and notice-count readings,
-  with manual entry available as a fallback. Add state adapters behind
-  `collect_warn_notices()` rather than mixing page scraping into the UI.
-- The previous Tariffs/Geopolitics section is parked for now; its data can be
-  reintroduced later by adding indicators back to the registry.
-
-### Adding a source type
-
-Keep the contract as `fetch -> parse/normalize -> Reading -> store`. Use:
-
-- `fred` for stable numeric series with clean IDs.
-- `scrape` for public pages/files where no structured API exists; parsers should
-  fail soft and return no readings rather than storing garbage.
-- `news` for aggregate media indexes such as GDELT.
-- `manual` for qualitative notes or fallback data that should be entered by an
-  admin user.
+| App shell | `app.py` | Streamlit page navigation and Econ Dashboard UI |
+| Econ config | `econ/indicators.py` | Visible macro indicator registry |
+| Econ models | `econ/models.py` | `Indicator`, `SeriesSpec`, and `Reading` shapes |
+| Econ sources | `econ/sources.py` | FRED, scrape, and news adapters |
+| Econ store | `econ/store.py` | SQLite locally, Postgres/Neon when configured |
+| Econ refresh | `econ/refresh.py` | Refresh orchestration |
+| Risk parser | `rmbs/presale_parser.py` | PDF text extraction and structured LLM schema |
+| Risk model | `rmbs/calculator.py` | Deterministic collateral, warehouse, and tranche math |
+| Risk UI | `rmbs/warehouse_app.py` | Parser review, assumptions, analysis, and workbook download |
+| Workbook logic | `rmbs/page.py` | Formula-linked Excel export and shared charts |
 
 ## Quickstart
 
 ```bash
-# 1. Install
 pip install -r requirements.txt
-
-# 2. Seed the brief's §2 data so the dashboard isn't empty
 python seed.py
-
-# 3. (Recommended) add a free FRED key for live data
-#    Get one: https://fredaccount.stlouisfed.org/apikeys
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-#    …then edit it and paste your key.
-
-# 4. Run
 streamlit run app.py
 ```
 
-Then click **🔄 Refresh now** in the sidebar to pull live FRED data. You can also
-refresh from the CLI:
+For live FRED refreshes and Risk Engine parsing, copy the example secrets file:
 
 ```bash
-python -m econ.refresh
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
 
-## Deploy to Streamlit Community Cloud (free)
+Then fill in the values you want to use.
 
-1. Push this repo to GitHub (`.gitignore` already excludes your secret + DB).
-2. Go to [share.streamlit.io](https://share.streamlit.io) → **New app** → point it
-   at this repo and `app.py`.
-3. In the app's **Settings → Secrets**, paste:
-   ```toml
-   FRED_API_KEY = "your_key_here"
-   ADMIN_PASSWORD = "choose-a-strong-password"
-   ```
-4. Deploy. It's now reachable from your phone.
+## Streamlit Secrets
 
-### Durable history with Neon Postgres
+Local and deployed secrets should live in Streamlit secrets, not in source code.
+The real `.streamlit/secrets.toml` file is gitignored.
 
-Streamlit Community Cloud has an ephemeral filesystem, so local `econ.db` resets
-on redeploy. For durable history, create a Neon Postgres database and add its
-connection string to Streamlit secrets:
+Common settings:
 
 ```toml
+FRED_API_KEY = "your_fred_key"
+ANTHROPIC_API_KEY = "sk-ant-..."
 DATABASE_URL = "postgresql://user:password@host/dbname?sslmode=require"
 ```
 
-`econ/store.py` automatically uses Postgres when `DATABASE_URL`, `POSTGRES_URL`,
-or `NEON_DATABASE_URL` is set. If none is set, it falls back to local SQLite.
+`DATABASE_URL` is optional locally. Without it, the app uses `econ.db`.
 
-On first deploy with Neon, the app creates the tables and seeds the starter data.
-After that, click **Refresh now** to pull the latest live data into Neon.
+## Deploy to Streamlit Community Cloud
 
-## Adding an indicator
+1. Push the repo to GitHub.
+2. Create a new Streamlit app pointing at `app.py`.
+3. Add the secrets you want in Streamlit Cloud settings.
+4. Deploy.
 
-Add one `Indicator(...)` to `INDICATORS` in [econ/indicators.py](econ/indicators.py).
-Find FRED series ids at [fred.stlouisfed.org](https://fred.stlouisfed.org). Pick a
-transform: `lin` (level), `pch` (% MoM/QoQ), `pc1` (% YoY), `chg` (change),
-`pca` (annualized, for GDP).
+For durable history and saved Risk Engine parse memory, configure a hosted
+Postgres database such as Neon and set `DATABASE_URL`, `POSTGRES_URL`, or
+`NEON_DATABASE_URL`.
 
-## Scheduling auto-refresh (optional)
+## Local Data and Git Hygiene
 
-The build ships with a manual button per your choice. To auto-refresh later,
-either add a cron job running `python -m econ.refresh`, or add `APScheduler` and
-kick it off at app start.
+The following local files are intentionally ignored:
+
+- `.streamlit/secrets.toml`
+- `econ.db`
+- `.env`
+- virtual environments and Python caches
+- local notes in `notes/`
+
+Do not commit real API keys, database URLs, uploaded presales, or local database
+files.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
+```

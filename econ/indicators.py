@@ -142,11 +142,13 @@ INDICATORS: list[Indicator] = [
     ),
     Indicator(
         key="warn_notices",
-        name="WARN Notices (layoff filings)",
+        name="Pennsylvania WARN Notices (layoff filings)",
         section="B · Income / Labor",
         cadence="irregular",
         intuition="Filed mass-layoff and closure notices are an early-warning labor "
-                  "signal, but coverage is state-fragmented and scrape quality varies.",
+                  "signal. Current scrape coverage is Pennsylvania only, from the "
+                  "Pennsylvania Department of Labor & Industry WARN notices page; "
+                  "national WARN coverage remains state-fragmented.",
         source_url="https://www.pa.gov/agencies/dli/programs-services/workforce-development-home/warn-requirements/warn-notices",
         source_type=SOURCE_SCRAPE,
         series=[
@@ -168,20 +170,6 @@ INDICATORS: list[Indicator] = [
             SeriesSpec("IP MoM", "INDPRO", "pch", "%", headline=True),
             SeriesSpec("IP YoY", "INDPRO", "pc1", "%"),
             SeriesSpec("Capacity utilization", "TCU", "lin", "%"),
-        ],
-    ),
-    Indicator(
-        key="ism_pmi",
-        name="ISM PMI (Manufacturing & Services)",
-        section="C · Production",
-        cadence="monthly",
-        intuition="Leading sentiment gauge; 50 is the expansion/contraction line; "
-                  "services dominates the US economy.",
-        source_url="https://www.ismworld.org/supply-management-news-and-reports/reports/ism-report-on-business/",
-        source_type=SOURCE_SCRAPE,  # not on FRED (licensed); scrape best-effort + manual fallback
-        series=[
-            SeriesSpec("Manufacturing PMI", None, "lin", "index", headline=True),
-            SeriesSpec("Services PMI", None, "lin", "index"),
         ],
     ),
     # ---- SECTION D — INFLATION ------------------------------------------

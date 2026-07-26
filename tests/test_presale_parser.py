@@ -13,11 +13,16 @@ from rmbs.calculator import RmbsInputs
 from rmbs.warehouse_app import (
     advance_spread_equity_irr_table,
     advance_spread_sensitivity_table,
+    cpr_cdr_sensitivity_table,
     cdr_severity_equity_irr_table,
     cdr_severity_sensitivity_table,
+    debt_tranche_pct,
     field_review_display_df,
     missing_sourced_rows,
     nuance_review_display_df,
+    parser_credit_error,
+    review_flags_html,
+    sensitivity_table_html,
     simple_range_note,
     tranche_a1_pct,
     tranche_stack_label,
@@ -25,6 +30,11 @@ from rmbs.warehouse_app import (
 
 
 class PresaleParserTest(unittest.TestCase):
+    def test_parser_credit_error_detects_credit_and_quota_messages(self):
+        self.assertTrue(parser_credit_error("insufficient_quota: billing credits exhausted"))
+        self.assertTrue(parser_credit_error("Payment required: account balance is too low"))
+        self.assertFalse(parser_credit_error("PDF text extraction failed"))
+
     def test_ce_gap_sizing_collapses_duplicate_attachments(self):
         attachments = [
             {"class_name": "Senior A", "rating": "AAA", "credit_enhancement_pct": 22.0,
@@ -44,6 +54,43 @@ class PresaleParserTest(unittest.TestCase):
         self.assertAlmostEqual(sizes[0]["thickness_pct"], 78.0)
         self.assertAlmostEqual(sizes[1]["thickness_pct"], 14.0)
         self.assertAlmostEqual(sizes[2]["thickness_pct"], 8.0)
+
+    def test_ce_gap_sizing_uses_aggregate_a1_over_a1a_component(self):
+        attachments = [
+            {"class_name": "A-1", "rating": "AAA", "credit_enhancement_pct": 23.26,
+             "is_representative": True, "source_anchor_text": "A-1 23.26", "page_hint": "p1", "confidence": 0.9},
+            {"class_name": "A-1-A", "rating": "AAA", "credit_enhancement_pct": 33.26,
+             "is_representative": True, "source_anchor_text": "A-1-A 33.26", "page_hint": "p1", "confidence": 0.9},
+            {"class_name": "A-1-B", "rating": "AAA", "credit_enhancement_pct": 23.26,
+             "is_representative": False, "source_anchor_text": "A-1-B 23.26", "page_hint": "p1", "confidence": 0.9},
+            {"class_name": "A-2", "rating": "AA", "credit_enhancement_pct": 18.0,
+             "is_representative": True, "source_anchor_text": "A-2 18.00", "page_hint": "p1", "confidence": 0.9},
+            {"class_name": "B-3", "rating": "NR", "credit_enhancement_pct": 0.0,
+             "is_representative": True, "source_anchor_text": "B-3 0.00", "page_hint": "p1", "confidence": 0.9},
+        ]
+
+        sizes = compute_ce_gap_sizes(attachments)
+
+        self.assertEqual(sizes[0]["class_name"], "A-1")
+        self.assertAlmostEqual(sizes[0]["attachment_pct"], 23.26)
+        self.assertAlmostEqual(sizes[0]["thickness_pct"], 76.74)
+        self.assertNotIn("A-1-A", [row["class_name"] for row in sizes])
+
+    def test_ce_gap_sizing_infers_a1_from_junior_component_when_aggregate_missing(self):
+        attachments = [
+            {"class_name": "A-1-A", "rating": "AAA", "credit_enhancement_pct": 33.26,
+             "is_representative": True, "source_anchor_text": "A-1-A 33.26", "page_hint": "p1", "confidence": 0.9},
+            {"class_name": "A-1-B", "rating": "AAA", "credit_enhancement_pct": 23.26,
+             "is_representative": True, "source_anchor_text": "A-1-B 23.26", "page_hint": "p1", "confidence": 0.9},
+            {"class_name": "B-3", "rating": "NR", "credit_enhancement_pct": 0.0,
+             "is_representative": True, "source_anchor_text": "B-3 0.00", "page_hint": "p1", "confidence": 0.9},
+        ]
+
+        sizes = compute_ce_gap_sizes(attachments)
+
+        self.assertEqual(sizes[0]["class_name"], "A-1")
+        self.assertAlmostEqual(sizes[0]["attachment_pct"], 23.26)
+        self.assertAlmostEqual(sizes[0]["thickness_pct"], 76.74)
 
     def test_validation_flags_are_relative_not_fixed_value_checks(self):
         parsed = {
@@ -151,10 +198,19 @@ class PresaleParserTest(unittest.TestCase):
                 "page": "PAGE 7",
                 "confidence": 0.95,
                 "anchor": "source text",
+            },
+            {
+                "field": "collateral_summary_notional",
+                "label": "Collateral Summary Notional",
+                "approved_value": 525_000_000,
+                "page": "PAGE 8",
+                "confidence": 0.95,
+                "anchor": "summary text",
             }
         ])
 
         self.assertEqual(list(display.columns), ["Label", "approved_value", "Page", "Verified"])
+        self.assertEqual(len(display), 1)
         self.assertEqual(display.iloc[0]["Verified"], "✅")
         self.assertEqual(display["approved_value"].dtype, object)
         self.assertEqual(display.iloc[0]["approved_value"], "12.45")
@@ -178,47 +234,126 @@ class PresaleParserTest(unittest.TestCase):
         self.assertNotIn("servicing_fee_pct", headline_fields)
         self.assertIn("severity_low_pct", nuance_fields)
         self.assertIn("prepayment_high_pct", nuance_fields)
+        self.assertEqual(len(nuance_display), 3)
+        self.assertNotIn("WA DSCR", nuance_display["Label"].tolist())
         self.assertIn("Servicing Fee", nuance_display["Label"].tolist())
+
+    def test_headline_review_supports_dynamic_deal_metrics(self):
+        parsed = {
+            "fields": {
+                "collateral_notional": {"value": 100_000_000, "page_hint": "PAGE 1", "source_anchor_text": "balance", "confidence": 1},
+                "wa_coupon_pct": {"value": 10.2, "page_hint": "PAGE 2", "source_anchor_text": "APR", "confidence": 1},
+                "term_months": {"value": 72, "page_hint": "PAGE 2", "source_anchor_text": "term", "confidence": 1},
+                "seasoning_months": {"value": 9, "page_hint": "PAGE 2", "source_anchor_text": "seasoning", "confidence": 1},
+            },
+            "headline_metrics": [
+                {
+                    "label": "YSOA",
+                    "value": 93.4,
+                    "unit": "%",
+                    "page_hint": "PAGE 5",
+                    "source_anchor_text": "yielding share of assets 93.4%",
+                    "confidence": 0.91,
+                }
+            ],
+        }
+
+        display = field_review_display_df(extraction_rows(parsed))
+
+        self.assertIn("YSOA (%)", display["Label"].tolist())
+        self.assertNotIn("WA DSCR", display["Label"].tolist())
+        self.assertTrue(display.loc[display["Label"].eq("YSOA (%)"), "Verified"].eq("✅").all())
+
+    def test_review_flags_render_as_numbered_notes_without_parser_note_label(self):
+        html = review_flags_html([
+            "Severity High is missing and needs review.",
+            "This unusual flag has no obvious field.",
+        ])
+
+        self.assertIn("<ol", html)
+        self.assertIn("<strong>Severity High</strong> is missing and needs review.", html)
+        self.assertIn("This unusual flag has no obvious field.", html)
+        self.assertNotIn("Parser note", html)
 
     def test_warehouse_app_sensitivity_tables_recompute_scenarios(self):
         inputs = RmbsInputs()
 
         cdr_table = cdr_severity_equity_irr_table(inputs)
         advance_table = advance_spread_equity_irr_table(inputs)
+        speed_table = cpr_cdr_sensitivity_table(inputs, "Levered Equity IRR")
 
-        self.assertEqual(cdr_table.shape, (10, 9))
-        self.assertEqual(advance_table.shape, (9, 7))
-        self.assertEqual(cdr_table.index[0], "CDR 0.25%")
-        self.assertIn("Sev 35%", cdr_table.columns)
-        self.assertIn("Spr 2%", advance_table.columns)
+        self.assertEqual(cdr_table.shape, (5, 5))
+        self.assertEqual(advance_table.shape, (5, 5))
+        self.assertEqual(speed_table.shape, (5, 5))
+        self.assertEqual(cdr_table.index[0], "0.25%")
+        self.assertIn("35%", cdr_table.columns)
+        self.assertIn("2%", advance_table.columns)
+        self.assertIn("8%", speed_table.columns)
         self.assertTrue(cdr_table.map(lambda value: isinstance(value, float)).all().all())
         self.assertTrue(advance_table.map(lambda value: isinstance(value, float)).all().all())
+        self.assertTrue(speed_table.map(lambda value: isinstance(value, float)).all().all())
 
     def test_warehouse_app_sensitivity_tables_support_selectable_metrics(self):
         inputs = RmbsInputs()
 
-        duration_table = cdr_severity_sensitivity_table(inputs, "Macaulay Duration")
+        collateral_wal_table = cdr_severity_sensitivity_table(inputs, "Collateral WAL")
         facility_wal_table = advance_spread_sensitivity_table(inputs, "Facility WAL")
         net_loss_table = cdr_severity_sensitivity_table(inputs, "Cumulative Net Loss")
+        lender_loss_table = advance_spread_sensitivity_table(inputs, "Lender Loss")
 
-        self.assertEqual(duration_table.shape, (10, 9))
-        self.assertEqual(facility_wal_table.shape, (9, 7))
-        self.assertTrue((duration_table > 0).all().all())
+        self.assertEqual(collateral_wal_table.shape, (5, 5))
+        self.assertEqual(facility_wal_table.shape, (5, 5))
+        self.assertTrue((collateral_wal_table > 0).all().all())
         self.assertTrue((facility_wal_table >= 0).all().all())
         self.assertTrue((net_loss_table >= 0).all().all())
+        self.assertTrue((lender_loss_table >= 0).all().all())
+
+    def test_warehouse_app_sensitivity_tables_use_presale_ranges_and_single_base_cell(self):
+        inputs = RmbsInputs(cdr_pct=10.0, severity_pct=35.0)
+        confirmed = {
+            "foreclosure_freq_low_pct": 4.22,
+            "foreclosure_freq_high_pct": 28.67,
+            "severity_low_pct": 20.14,
+            "severity_high_pct": 49.88,
+        }
+
+        table = cdr_severity_sensitivity_table(inputs, "Levered Equity IRR", confirmed)
+        rendered = sensitivity_table_html(
+            "Credit Stress",
+            "test",
+            table,
+            "10.33%",
+            "35.01%",
+            "Levered Equity IRR",
+            "CDR",
+            "Severity",
+        )
+
+        self.assertIn("4.22%", table.index)
+        self.assertIn("28.67%", table.index)
+        self.assertIn("20.14%", table.columns)
+        self.assertIn("49.88%", table.columns)
+        self.assertEqual(len(table.index), 5)
+        self.assertEqual(len(table.columns), 5)
+        self.assertIn("class='y-axis-label'", rendered)
+        self.assertIn(">Severity</th>", rendered)
+        self.assertEqual(rendered.count("base-cell"), 2)  # CSS rule + one highlighted value cell.
 
     def test_tranche_stack_label_collapses_exchangeable_senior_variants(self):
         self.assertEqual(tranche_stack_label({"class_name": "A-1A"}, 0), "A1")
         self.assertEqual(tranche_stack_label({"class_name": "A-1B"}, 0), "A1")
         self.assertEqual(tranche_stack_label({"class_name": "Class B"}, 1), "B")
 
-    def test_assumption_note_helpers_are_concise_and_a1_seeded(self):
+    def test_assumption_note_helpers_are_concise_and_debt_tranche_seeded(self):
         self.assertEqual(simple_range_note("Presale range", 1, 25), "Presale range: 1%-25%")
         self.assertEqual(simple_range_note("Presale range", None, None), "Presale range: n/a")
-        self.assertEqual(tranche_a1_pct([
+        ce_sizes = [
             {"class_name": "A-1A", "thickness_pct": 67.44},
             {"class_name": "B", "thickness_pct": 24.36},
-        ]), 67.44)
+            {"class_name": "Residual", "thickness_pct": 8.20},
+        ]
+        self.assertEqual(debt_tranche_pct(ce_sizes), 91.8)
+        self.assertEqual(tranche_a1_pct(ce_sizes), 91.8)
 
 
 if __name__ == "__main__":

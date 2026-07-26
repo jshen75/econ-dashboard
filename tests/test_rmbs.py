@@ -5,7 +5,7 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 
-from rmbs.calculator import RmbsInputs, TRANCHES, project_rmbs_waterfall, tranche_initial_balances
+from rmbs.calculator import RmbsInputs, TRANCHES, project_rmbs_waterfall, stable_monthly_irr, tranche_initial_balances
 from rmbs.page import (
     SCENARIO_A_COLUMNS,
     advance_optimization,
@@ -117,6 +117,21 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertGreater(metrics["Scenario A Equity IRR - Levered"], metrics["Scenario A Equity IRR - Unlevered"])
         self.assertGreater(metrics["Scenario A Equity IRR - Unlevered"], 0)
 
+    def test_stable_monthly_irr_returns_negative_roots(self):
+        annualized_irr = stable_monthly_irr([-100.0, 0.0, 0.0, 50.0]) * 12
+
+        self.assertLess(annualized_irr, 0)
+
+    def test_stable_monthly_irr_returns_total_loss_for_no_distributions(self):
+        self.assertEqual(stable_monthly_irr([-100.0, 0.0, 0.0, 0.0]) * 12, -1.0)
+
+    def test_scenario_a_equity_irr_reports_total_loss_as_negative_100(self):
+        inputs = RmbsInputs(cpr_pct=0.0, cdr_pct=100.0, severity_pct=100.0)
+        _schedule, _tranche_summary, metrics = project_rmbs_waterfall(inputs)
+
+        self.assertEqual(metrics["Scenario A Equity IRR - Levered"], -1.0)
+        self.assertEqual(metrics["Scenario A Equity IRR - Unlevered"], -1.0)
+
     def test_scenario_a_page_columns_exclude_waterfall_details(self):
         schedule, _tranche_summary, _metrics = project_rmbs_waterfall(RmbsInputs())
         table = warehouse_table(schedule)
@@ -127,6 +142,7 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertIn("Facility Beginning Balance", table.columns)
         self.assertIn("Scenario A Levered Equity Cashflow", table.columns)
         self.assertIn("Scenario A Unlevered Equity Cashflow", table.columns)
+        self.assertEqual(table.iloc[0]["Period"], 0)
         self.assertNotIn("Admin Fee", table.columns)
         self.assertNotIn("Warehouse Equity Cashflow", table.columns)
         self.assertNotIn("Scenario B Debt Proceeds", table.columns)
@@ -273,10 +289,12 @@ class RmbsCalculatorTest(unittest.TestCase):
             workbook_xml = zf.read("xl/workbook.xml").decode()
             shared_strings = zf.read("xl/sharedStrings.xml").decode()
             scenario_sheet = zf.read("xl/worksheets/sheet1.xml")
+            worksheet_names = zf.namelist()
         formulas = sheet_formulas(scenario_sheet)
 
         self.assertNotIn("Scenario A Cashflows", workbook_xml)
         self.assertNotIn('state="hidden"', workbook_xml)
+        self.assertNotIn("xl/worksheets/sheet2.xml", worksheet_names)
         self.assertNotIn(b"<pane", scenario_sheet)
         self.assertNotIn("Admin Fee", shared_strings)
         self.assertIn("Scenario A Levered Equity Cashflow", shared_strings)
@@ -287,16 +305,31 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertEqual(formulas["I5"], "$I$3+$I$4")
         self.assertEqual(formulas["I7"], "$B$3*$I$6")
         self.assertEqual(formulas["I8"], "$B$3-$I$7")
-        self.assertEqual(formulas["P4"], "SUM(Y26:Y383)")
-        self.assertIn("LET(cf,_xlfn.VSTACK(-($B$3-$I$7),AL26:AL383)", formulas["P13"])
-        self.assertIn("IFERROR(IRR(cf,0.005)", formulas["P13"])
-        self.assertIn("IFERROR(IRR(cf,-0.005)", formulas["P13"])
-        self.assertTrue(formulas["P13"].endswith("r*12)"))
-        self.assertIn("LET(cf,_xlfn.VSTACK(-$B$3,AM26:AM383)", formulas["P14"])
+        self.assertEqual(formulas["P4"], "SUM(Y26:Y384)")
+        self.assertNotIn("VSTACK", scenario_sheet.decode())
+        self.assertNotIn("_xlfn", scenario_sheet.decode())
+        self.assertIn("LET(cf,$AL$26:$AL$384", formulas["P13"])
+        self.assertIn('SUMIF(cf,">0")', formulas["P13"])
+        self.assertIn("IF(dist<=0,-1", formulas["P13"])
+        self.assertIn("IF(ISNA(r),-1,r*12)", formulas["P13"])
+        self.assertIn("IRR(cf,-0.2)", formulas["P13"])
+        self.assertIn("LET(cf,$AM$26:$AM$384", formulas["P14"])
+        self.assertIn('SUMIF(cf,">0")', formulas["P14"])
+        self.assertIn("IF(dist<=0,-1", formulas["P14"])
         self.assertIn("NA()", formulas["P14"])
         self.assertEqual(formulas["P15"], "$P$13-$P$14")
-        self.assertEqual(formulas["A26"], "1")
-        self.assertEqual(formulas["D26"], "PMT($B$4/12,$B$5,-$B$3)")
+        self.assertEqual(formulas["A26"], "0")
+        self.assertEqual(formulas["B26"], "0")
+        self.assertEqual(formulas["D26"], "0")
+        self.assertEqual(formulas["G26"], "$B$3")
+        self.assertEqual(formulas["J26"], "0")
+        self.assertEqual(formulas["Z26"], "$B$3")
+        self.assertEqual(formulas["AH26"], "$I$7")
+        self.assertEqual(formulas["AL26"], "$I$7-$B$3")
+        self.assertEqual(formulas["AM26"], "-$B$3")
+        self.assertEqual(formulas["A27"], "A26+1")
+        self.assertEqual(formulas["C27"], "G26")
+        self.assertEqual(formulas["D27"], "PMT($B$4/12,$B$5,-$B$3)")
 
     def test_excel_export_uses_correct_base_row_formulas(self):
         inputs = RmbsInputs()
@@ -331,11 +364,14 @@ class RmbsCalculatorTest(unittest.TestCase):
         self.assertEqual(formulas["AX58"], "AF58")
         self.assertEqual(formulas["AY58"], "IFERROR(AW58*12/AV58,0)")
         self.assertIn("LET(cf,'Tranche Cashflows'!U2:U360", formulas["P22"])
-        self.assertIn("IFERROR(IRR(cf,0.005)", formulas["P22"])
+        self.assertIn('SUMIF(cf,">0")', formulas["P22"])
+        self.assertIn("IF(dist<=0,-1", formulas["P22"])
+        self.assertIn("IRR(cf,-0.2)", formulas["P22"])
         self.assertIn("NA()", formulas["P22"])
-        self.assertTrue(formulas["P22"].endswith("r*12)"))
+        self.assertIn("IF(ISNA(r),-1,r*12)", formulas["P22"])
         self.assertIn("LET(cf,'Tranche Cashflows'!V2:V360", formulas["P23"])
-        self.assertIn("IFERROR(IRR(cf,-0.005)", formulas["P23"])
+        self.assertIn('SUMIF(cf,">0")', formulas["P23"])
+        self.assertIn("IF(dist<=0,-1", formulas["P23"])
         self.assertIn("NA()", formulas["P23"])
         self.assertEqual(helper_formulas["U2"], "-('RMBS Scenario'!$B$3-'RMBS Scenario'!$W$7)")
         self.assertEqual(helper_formulas["V2"], "-'RMBS Scenario'!$B$3")

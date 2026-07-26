@@ -78,7 +78,7 @@ def render_mortgage_page() -> None:
             data=build_excel_download(inputs, schedule, metrics),
             file_name="mortgage_scenario.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
+            use_container_width=True,
         )
     st.markdown(
         render_excel_table_html(schedule[ordered_columns], schedule, metrics),
@@ -192,12 +192,12 @@ def render_sensitivity_analysis(inputs: MortgageInputs) -> None:
 
     left, right = st.columns(2)
     with left:
-        st.plotly_chart(cdr_sensitivity_figure(cdr_df), width="stretch",
+        st.plotly_chart(cdr_sensitivity_figure(cdr_df), use_container_width=True,
                         key="mortgage-cdr-sensitivity")
     with right:
-        st.plotly_chart(advance_rate_figure(advance_df), width="stretch",
+        st.plotly_chart(advance_rate_figure(advance_df), use_container_width=True,
                         key="mortgage-advance-rate-sensitivity")
-    st.plotly_chart(levered_irr_heatmap(heatmap_df), width="stretch",
+    st.plotly_chart(levered_irr_heatmap(heatmap_df), use_container_width=True,
                     key="mortgage-irr-heatmap")
 
 

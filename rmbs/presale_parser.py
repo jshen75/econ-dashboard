@@ -19,9 +19,6 @@ FIELD_LABELS = {
     "wa_coupon_pct": "WA Coupon",
     "term_months": "WA Original Term",
     "seasoning_months": "WA Seasoning",
-    "wa_fico": "WA FICO",
-    "wa_cltv_pct": "WA CLTV",
-    "wa_dscr": "WA DSCR",
 }
 
 NUANCE_FIELD_LABELS = {
@@ -36,7 +33,13 @@ NUANCE_FIELD_LABELS = {
     "servicing_fee_pct": "Servicing Fee",
 }
 
-ALL_FIELD_LABELS = {**FIELD_LABELS, **NUANCE_FIELD_LABELS}
+OPTIONAL_FIELD_LABELS = {
+    "wa_fico": "WA FICO",
+    "wa_cltv_pct": "WA CLTV",
+    "wa_dscr": "WA DSCR",
+}
+
+ALL_FIELD_LABELS = {**FIELD_LABELS, **OPTIONAL_FIELD_LABELS, **NUANCE_FIELD_LABELS}
 
 TRANCHE_SIZE_FIELDS = ["a1_pct", "a1f_pct", "a2_pct", "a3_pct", "m1_pct", "b1a_pct", "b1b_pct", "b2_pct", "b3_pct"]
 
@@ -52,7 +55,7 @@ ASSUMED_DEFAULTS = {
 
 SYSTEM_PROMPT = """
 You are an institutional structured-finance presale extraction engine.
-Parse any RMBS presale generically. Do not rely on fixed deal values.
+Parse any structured-finance presale generically, including RMBS and other ABS collateral types. Do not rely on fixed deal values.
 
 First discover the subject transaction from the title/first page and rated transaction sections.
 The subject deal is the transaction being rated, not comparison or benchmark deal columns.
@@ -66,7 +69,10 @@ Rules:
 - collateral_notional comes from Closing pool balance or a collateral-summary paragraph. Convert million-dollar units to absolute dollars.
 - tranche sizing uses Credit enhancement (%) attachment points from the Preliminary Ratings table. Do not sum preliminary amount rows.
 - collapse exchangeable, notional, interest-only, first-cashflow, and last-cashflow variants into one representative per credit-enhancement level.
-- collateral stats, loss-estimation ranges, prepayment/prepay speed ranges, performance trigger levels, and servicing fee come from the subject column only when present.
+- if the preliminary ratings table contains A-1 plus A-1-A / A-1-B, treat A-1 as the aggregate class equal to A-1-A + A-1-B. Use the aggregate A-1 credit-enhancement row as the senior A1 attachment; do not treat A-1-A as the whole A1 level. If aggregate A-1 is absent, infer A1 from the junior-most A-1 component attachment.
+- collateral stats, loss-estimation ranges, prepayment/prepay speed ranges, performance trigger levels, servicing fee, and deal-specific collateral-quality metrics come from the subject column only when present.
+- do not force RMBS-only metrics such as WA FICO, WA CLTV, WA DSCR, or foreclosure frequency when the deal uses a different collateral type. For auto, consumer, unsecured, student, equipment, or other ABS collateral, populate headline_metrics with the most decision-useful labels the presale actually discloses, such as YSOA, WA APR, WA remaining term, WA original term, WA FICO, WA LTV, WA seasoning, payment-to-income, geographic/product mix, obligor concentration, or pool stratification metrics.
+- headline_metrics is for flexible, sourced, deal-descriptive values. Use it for RMBS fields too when they are useful, but do not invent missing values to satisfy a fixed RMBS template.
 - prepayment_low_pct/prepayment_high_pct: scan ALL explicit prepayment/CPR/prepay speed assumptions in the presale, including rating stresses/tranche scenarios when shown. Return the absolute numeric low and absolute numeric high across the table, not only AAA or only the first row. Use anchors that identify the labels/rows used for the min and max. Return null only if no explicit prepayment number exists.
 - cumulative_loss_trigger_pct and delinquency_trigger_pct should come from trigger/performance-test sections. Return null if no explicit trigger exists.
 - servicing_fee_pct should come from servicing fee, master servicing fee, or aggregate servicing/admin/expense fee disclosure only when explicit. Return null if not present.
@@ -79,7 +85,14 @@ Return only the requested structured object through the tool.
 PRESALE_EXTRACTION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["deal_name", "fields", "tranche_attachments", "validation_flags", "assumptions_not_sourced"],
+    "required": [
+        "deal_name",
+        "fields",
+        "headline_metrics",
+        "tranche_attachments",
+        "validation_flags",
+        "assumptions_not_sourced",
+    ],
     "properties": {
         "deal_name": {
             "type": "object",
@@ -95,7 +108,7 @@ PRESALE_EXTRACTION_SCHEMA: dict[str, Any] = {
         "fields": {
             "type": "object",
             "additionalProperties": False,
-            "required": list(ALL_FIELD_LABELS),
+            "required": list(FIELD_LABELS),
             "properties": {
                 field: {
                     "type": "object",
@@ -109,6 +122,22 @@ PRESALE_EXTRACTION_SCHEMA: dict[str, Any] = {
                     },
                 }
                 for field in ALL_FIELD_LABELS
+            },
+        },
+        "headline_metrics": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["label", "value", "unit", "source_anchor_text", "page_hint", "confidence"],
+                "properties": {
+                    "label": {"type": ["string", "null"]},
+                    "value": {"type": ["number", "integer", "string", "null"]},
+                    "unit": {"type": ["string", "null"]},
+                    "source_anchor_text": {"type": ["string", "null"]},
+                    "page_hint": {"type": ["string", "null"]},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
             },
         },
         "tranche_attachments": {
@@ -237,6 +266,7 @@ def numeric_value(value: Any) -> float | None:
 
 def compute_ce_gap_sizes(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse duplicate CE levels and compute tranche thickness from CE gaps."""
+    attachments = normalize_a1_aggregate_attachments(attachments)
     by_ce: dict[float, dict[str, Any]] = {}
     for item in attachments:
         ce = numeric_value(item.get("credit_enhancement_pct"))
@@ -264,6 +294,54 @@ def compute_ce_gap_sizes(attachments: list[dict[str, Any]]) -> list[dict[str, An
     return sizes
 
 
+def normalize_a1_aggregate_attachments(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use aggregate A-1 as the senior modeled level, not internal A-1-A/B pieces."""
+    aggregate_rows = [
+        item for item in attachments
+        if tranche_class_token(item.get("class_name")) == "A1"
+        and numeric_value(item.get("credit_enhancement_pct")) is not None
+    ]
+    if aggregate_rows:
+        return [
+            item for item in attachments
+            if not is_a1_component_token(tranche_class_token(item.get("class_name")))
+        ]
+
+    component_rows = [
+        item for item in attachments
+        if is_a1_component_token(tranche_class_token(item.get("class_name")))
+        and numeric_value(item.get("credit_enhancement_pct")) is not None
+    ]
+    if not component_rows:
+        return attachments
+
+    junior_component = min(
+        component_rows,
+        key=lambda item: float(numeric_value(item.get("credit_enhancement_pct")) or 0.0),
+    )
+    inferred = {
+        **junior_component,
+        "class_name": "A-1",
+        "is_representative": True,
+        "collapse_reason": (
+            "Aggregate A-1 inferred from A-1-A/A-1-B components; A-1 equals the sum "
+            "of those components and uses the junior-most A-1 attachment."
+        ),
+    }
+    return [
+        item for item in attachments
+        if not is_a1_component_token(tranche_class_token(item.get("class_name")))
+    ] + [inferred]
+
+
+def tranche_class_token(class_name: Any) -> str:
+    return str(class_name or "").upper().replace("CLASS", "").replace("-", "").replace(" ", "").strip()
+
+
+def is_a1_component_token(token: str) -> bool:
+    return token in {"A1A", "A1B", "A1FCF", "A1LCF"}
+
+
 def validation_flags(parsed: dict[str, Any], ce_sizes: list[dict[str, Any]]) -> list[str]:
     flags = list(parsed.get("validation_flags") or [])
     total_size = sum(float(row.get("thickness_pct") or 0) for row in ce_sizes)
@@ -281,7 +359,7 @@ def validation_flags(parsed: dict[str, Any], ce_sizes: list[dict[str, Any]]) -> 
     for field, data in fields.items():
         if data.get("value") is not None and not data.get("source_anchor_text"):
             flags.append(f"{ALL_FIELD_LABELS.get(field, field)} has a sourced value but no anchor text.")
-        if data.get("value") is None:
+        if field in FIELD_LABELS and data.get("value") is None:
             flags.append(f"{ALL_FIELD_LABELS.get(field, field)} is missing and needs review.")
         if float(data.get("confidence") or 0) < 0.65:
             flags.append(f"{ALL_FIELD_LABELS.get(field, field)} is low confidence.")
@@ -300,6 +378,27 @@ def extraction_rows(parsed: dict[str, Any]) -> list[dict[str, Any]]:
             "page": data.get("page_hint"),
             "anchor": data.get("source_anchor_text"),
         })
+    rows.extend(headline_metric_rows(parsed))
+    return rows
+
+
+def headline_metric_rows(parsed: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for idx, data in enumerate(parsed.get("headline_metrics") or []):
+        label = str(data.get("label") or "").strip()
+        if not label:
+            continue
+        unit = str(data.get("unit") or "").strip()
+        display_label = f"{label} ({unit})" if unit and unit not in label else label
+        rows.append({
+            "field": f"headline_metric_{idx}",
+            "label": display_label,
+            "approved_value": data.get("value"),
+            "confidence": data.get("confidence", 0.0),
+            "page": data.get("page_hint"),
+            "anchor": data.get("source_anchor_text"),
+            "dynamic": True,
+        })
     return rows
 
 
@@ -307,6 +406,8 @@ def nuance_rows(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for field, label in NUANCE_FIELD_LABELS.items():
         data = extracted_field(parsed, field)
+        if field not in (parsed.get("fields") or {}) and data.get("value") is None:
+            continue
         rows.append({
             "field": field,
             "label": label,
